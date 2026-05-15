@@ -18,6 +18,7 @@ import { publicContentRouter } from './routes/publicContent.js';
 import { cmsRouter } from './routes/cms.js';
 import { oauthRouter } from './routes/oauth.js';
 import { developmentRouter } from './routes/development.js';
+import { auditLogsRouter } from './routes/auditLogs.js';
 import { getCorsOptions } from './lib/corsOptions.js';
 
 export function createApp({ serveStatic = true } = {}) {
@@ -40,6 +41,7 @@ export function createApp({ serveStatic = true } = {}) {
   app.use('/cms', cmsRouter);
   app.use('/auth/oauth', oauthRouter);
   app.use('/development-panel', developmentRouter);
+  app.use('/audit-logs', auditLogsRouter);
 
   app.use(errorMiddleware);
 
