@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { getPool } from '../db/pool.js';
+import { ensureBankSchema } from '../db/ensureBankSchema.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { newId } from '../lib/ids.js';
@@ -50,16 +51,78 @@ function normalizeLoanTypeQuery(value) {
   return LOAN_TYPE_ALIASES[key] || (key.endsWith('_loan') ? key : null);
 }
 
+const emptyToNull = (value) =>
+  value === '' || value === undefined ? null : value;
+
 const BankSchema = z.object({
   name: z.string().min(1),
-  logo_url: z.string().url().optional().nullable(),
-  logo_alt: z.string().optional().nullable(),
+  logo_url: z.preprocess(
+    emptyToNull,
+    z.union([z.string().url(), z.null()]).optional(),
+  ),
+  logo_alt: z.preprocess(emptyToNull, z.string().nullable().optional()),
   status: z.string().optional(),
-  display_priority: z.number().optional(),
+  display_priority: z.coerce.number().optional(),
+  bank_type: z.preprocess(emptyToNull, z.string().nullable().optional()),
+  rating: z.coerce.number().optional().nullable(),
+  reviews_count: z.coerce.number().optional().nullable(),
+  customers_served: z.preprocess(emptyToNull, z.string().nullable().optional()),
+  partnership_duration: z.preprocess(emptyToNull, z.string().nullable().optional()),
+  certifications: z.array(z.string()).optional().nullable(),
 });
+
+function normalizeBankBody(body = {}, { partial = false } = {}) {
+  const raw = { ...body };
+  if (raw.logoUrl !== undefined && raw.logo_url === undefined) raw.logo_url = raw.logoUrl;
+  if (raw.logoAlt !== undefined && raw.logo_alt === undefined) raw.logo_alt = raw.logoAlt;
+  if (raw.bankType !== undefined && raw.bank_type === undefined) raw.bank_type = raw.bankType;
+  if (raw.displayPriority !== undefined && raw.display_priority === undefined) {
+    raw.display_priority = raw.displayPriority;
+  }
+  if (raw.reviewsCount !== undefined && raw.reviews_count === undefined) {
+    raw.reviews_count = raw.reviewsCount;
+  }
+  if (raw.customersServed !== undefined && raw.customers_served === undefined) {
+    raw.customers_served = raw.customersServed;
+  }
+  if (raw.partnershipDuration !== undefined && raw.partnership_duration === undefined) {
+    raw.partnership_duration = raw.partnershipDuration;
+  }
+  return partial ? BankSchema.partial().parse(raw) : BankSchema.parse(raw);
+}
+
+const BANK_COLUMNS = `
+  id, name, logo_url, logo_alt, bank_type, status, rating, reviews_count,
+  customers_served, partnership_duration, certifications, display_priority, created_by,
+  created_at, updated_at
+`;
+
+function serializeCertifications(value) {
+  if (value == null) return null;
+  return JSON.stringify(value);
+}
+
+function parseCertifications(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return [];
+  }
+}
+
+function formatBankRow(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    certifications: parseCertifications(row.certifications),
+  };
+}
 
 banksRouter.get('/', async (req, res, next) => {
   try {
+    await ensureBankSchema();
     const includeInactive = req.query.includeInactive === 'true';
     const includeProducts = req.query.includeProducts !== 'false';
     const loanTypeFilter = normalizeLoanTypeQuery(req.query.loanType);
@@ -95,7 +158,7 @@ banksRouter.get('/', async (req, res, next) => {
       const bankProducts =
         loanTypeFilter && entry.matched.length > 0 ? entry.matched : entry.all;
       return {
-        ...bank,
+        ...formatBankRow(bank),
         bank_products: bankProducts,
       };
     });
@@ -111,7 +174,7 @@ banksRouter.get('/:id', async (req, res, next) => {
     const pool = getPool();
     const [[row]] = await pool.execute(`SELECT * FROM banks WHERE id = :id LIMIT 1`, { id: req.params.id });
     if (!row) return res.status(404).json({ error: 'Bank not found' });
-    res.json(row);
+    res.json(formatBankRow(row));
   } catch (err) {
     next(err);
   }
@@ -120,27 +183,42 @@ banksRouter.get('/:id', async (req, res, next) => {
 banksRouter.post(
   '/',
   authenticate,
-  authorize({ resource: 'banks', action: 'manage' }),
+  authorize({ resource: 'banks', action: 'update' }),
   async (req, res, next) => {
     try {
-      const input = BankSchema.parse(req.body);
+      await ensureBankSchema();
+      const input = normalizeBankBody(req.body);
       const pool = getPool();
       const id = newId();
       await pool.execute(
-        `INSERT INTO banks (id, name, logo_url, logo_alt, status, display_priority, created_by)
-         VALUES (:id, :name, :logo_url, :logo_alt, :status, :display_priority, :created_by)`,
+        `INSERT INTO banks (
+          id, name, logo_url, logo_alt, bank_type, status, rating, reviews_count,
+          customers_served, partnership_duration, certifications, display_priority, created_by
+        ) VALUES (
+          :id, :name, :logo_url, :logo_alt, :bank_type, :status, :rating, :reviews_count,
+          :customers_served, :partnership_duration, :certifications, :display_priority, :created_by
+        )`,
         {
           id,
           name: input.name,
           logo_url: input.logo_url ?? null,
           logo_alt: input.logo_alt ?? null,
+          bank_type: input.bank_type ?? 'private',
           status: input.status ?? 'active',
+          rating: input.rating ?? null,
+          reviews_count: input.reviews_count ?? 0,
+          customers_served: input.customers_served ?? null,
+          partnership_duration: input.partnership_duration ?? null,
+          certifications: serializeCertifications(input.certifications ?? []),
           display_priority: input.display_priority ?? 0,
           created_by: req.auth.userId,
         },
       );
-      const [[row]] = await pool.execute(`SELECT * FROM banks WHERE id = :id`, { id });
-      res.status(201).json(row);
+      const [[row]] = await pool.execute(
+        `SELECT ${BANK_COLUMNS} FROM banks WHERE id = :id`,
+        { id },
+      );
+      res.status(201).json(formatBankRow(row));
     } catch (err) {
       next(err);
     }
@@ -150,23 +228,48 @@ banksRouter.post(
 banksRouter.patch(
   '/:id',
   authenticate,
-  authorize({ resource: 'banks', action: 'manage' }),
+  authorize({ resource: 'banks', action: 'update' }),
   async (req, res, next) => {
     try {
-      const input = BankSchema.partial().parse(req.body);
+      await ensureBankSchema();
+      const input = normalizeBankBody(req.body, { partial: true });
       const pool = getPool();
       await pool.execute(
         `UPDATE banks
          SET name = COALESCE(:name, name),
              logo_url = COALESCE(:logo_url, logo_url),
              logo_alt = COALESCE(:logo_alt, logo_alt),
+             bank_type = COALESCE(:bank_type, bank_type),
              status = COALESCE(:status, status),
+             rating = COALESCE(:rating, rating),
+             reviews_count = COALESCE(:reviews_count, reviews_count),
+             customers_served = COALESCE(:customers_served, customers_served),
+             partnership_duration = COALESCE(:partnership_duration, partnership_duration),
+             certifications = COALESCE(:certifications, certifications),
              display_priority = COALESCE(:display_priority, display_priority)
          WHERE id = :id`,
-        { ...input, id: req.params.id },
+        {
+          id: req.params.id,
+          name: input.name ?? null,
+          logo_url: input.logo_url ?? null,
+          logo_alt: input.logo_alt ?? null,
+          bank_type: input.bank_type ?? null,
+          status: input.status ?? null,
+          rating: input.rating ?? null,
+          reviews_count: input.reviews_count ?? null,
+          customers_served: input.customers_served ?? null,
+          partnership_duration: input.partnership_duration ?? null,
+          certifications: input.certifications != null
+            ? serializeCertifications(input.certifications)
+            : null,
+          display_priority: input.display_priority ?? null,
+        },
       );
-      const [[row]] = await pool.execute(`SELECT * FROM banks WHERE id = :id`, { id: req.params.id });
-      res.json(row);
+      const [[row]] = await pool.execute(
+        `SELECT ${BANK_COLUMNS} FROM banks WHERE id = :id`,
+        { id: req.params.id },
+      );
+      res.json(formatBankRow(row));
     } catch (err) {
       next(err);
     }
@@ -176,7 +279,7 @@ banksRouter.patch(
 banksRouter.delete(
   '/:id',
   authenticate,
-  authorize({ resource: 'banks', action: 'manage' }),
+  authorize({ resource: 'banks', action: 'update' }),
   async (req, res, next) => {
     try {
       const pool = getPool();
@@ -204,7 +307,7 @@ banksRouter.get('/:id/products', async (req, res, next) => {
 banksRouter.post(
   '/:id/products',
   authenticate,
-  authorize({ resource: 'bank_products', action: 'manage' }),
+  authorize({ resource: 'bank_products', action: 'update' }),
   async (req, res, next) => {
     try {
       const pool = getPool();
