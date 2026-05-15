@@ -7,6 +7,7 @@ import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
 import { sha256Hex } from '../lib/crypto.js';
 import { signAccessToken, signRefreshToken } from '../lib/jwt.js';
+import { getOAuthFrontendCallback, getPublicSiteOrigin } from '../lib/publicUrl.js';
 
 export const oauthRouter = Router();
 
@@ -31,16 +32,15 @@ const PROVIDERS = {
 };
 
 function getRedirectUri(provider) {
-  const base = process.env.API_PUBLIC_URL || `http://127.0.0.1:${process.env.API_PORT || 8080}`;
-  return `${base}/auth/oauth/${provider}/callback`;
+  return `${getPublicSiteOrigin()}/auth/oauth/${provider}/callback`;
 }
 
 function getFrontendCallbackUrl() {
-  return process.env.OAUTH_FRONTEND_CALLBACK || 'http://127.0.0.1:4028/oauth/callback';
+  return getOAuthFrontendCallback();
 }
 
 function setRefreshCookie(res, token) {
-  const secure = process.env.API_COOKIE_SECURE === 'true';
+  const secure = process.env.API_COOKIE_SECURE === 'true' || Boolean(process.env.VERCEL);
   res.cookie('refresh_token', token, {
     httpOnly: true,
     secure,

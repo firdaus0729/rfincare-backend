@@ -19,6 +19,9 @@ const SESSION_COOKIE = 'dev_panel_session';
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
 function isPanelEnabled() {
+  if (process.env.VERCEL) {
+    return process.env.ENABLE_DEV_PANEL === 'true';
+  }
   return process.env.ENABLE_DEV_PANEL !== 'false';
 }
 
