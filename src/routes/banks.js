@@ -8,6 +8,48 @@ import { newId } from '../lib/ids.js';
 
 export const banksRouter = Router();
 
+const LOAN_TYPE_ALIASES = {
+  personal: 'personal_loan',
+  home: 'home_loan',
+  business: 'business_loan',
+  auto: 'auto_loan',
+  education: 'education_loan',
+  personal_loan: 'personal_loan',
+  home_loan: 'home_loan',
+  business_loan: 'business_loan',
+  auto_loan: 'auto_loan',
+  education_loan: 'education_loan',
+};
+
+function parseProductData(data) {
+  if (!data) return {};
+  if (typeof data === 'object') return data;
+  try {
+    return JSON.parse(data);
+  } catch {
+    return {};
+  }
+}
+
+function resolveProductLoanType(product) {
+  const d = parseProductData(product.data);
+  const explicit = d.loanType || d.loan_type || d.type || d.productType;
+  if (explicit) return String(explicit).toLowerCase();
+  const name = String(product.name || '').toLowerCase();
+  if (name.includes('personal')) return 'personal_loan';
+  if (name.includes('home')) return 'home_loan';
+  if (name.includes('business')) return 'business_loan';
+  if (name.includes('auto') || name.includes('car')) return 'auto_loan';
+  if (name.includes('education')) return 'education_loan';
+  return null;
+}
+
+function normalizeLoanTypeQuery(value) {
+  if (!value) return null;
+  const key = String(value).toLowerCase().replace(/-/g, '_');
+  return LOAN_TYPE_ALIASES[key] || (key.endsWith('_loan') ? key : null);
+}
+
 const BankSchema = z.object({
   name: z.string().min(1),
   logo_url: z.string().url().optional().nullable(),
@@ -19,11 +61,40 @@ const BankSchema = z.object({
 banksRouter.get('/', async (req, res, next) => {
   try {
     const includeInactive = req.query.includeInactive === 'true';
+    const includeProducts = req.query.includeProducts !== 'false';
+    const loanTypeFilter = normalizeLoanTypeQuery(req.query.loanType);
     const pool = getPool();
     const [rows] = await pool.execute(
       `SELECT * FROM banks ${includeInactive ? '' : "WHERE status = 'active'"} ORDER BY display_priority DESC`,
     );
-    res.json(rows);
+
+    if (!includeProducts) {
+      return res.json(rows);
+    }
+
+    const [products] = await pool.execute(
+      `SELECT id, bank_id, name, is_active, data FROM bank_products WHERE is_active = 1`,
+    );
+
+    const productsByBank = new Map();
+    for (const product of products) {
+      const loanType = resolveProductLoanType(product);
+      const enriched = { ...product, loan_type: loanType };
+      if (loanTypeFilter && loanType !== loanTypeFilter) continue;
+      if (!productsByBank.has(product.bank_id)) productsByBank.set(product.bank_id, []);
+      productsByBank.get(product.bank_id).push(enriched);
+    }
+
+    let result = rows.map((bank) => ({
+      ...bank,
+      bank_products: productsByBank.get(bank.id) || [],
+    }));
+
+    if (loanTypeFilter) {
+      result = result.filter((bank) => bank.bank_products.length > 0);
+    }
+
+    res.json(result);
   } catch (err) {
     next(err);
   }
