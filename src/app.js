@@ -13,6 +13,7 @@ import { bankProductsRouter } from './routes/bankProducts.js';
 import { documentsRouter } from './routes/documents.js';
 import { statesRouter } from './routes/states.js';
 import { loanApplicationsRouter } from './routes/loanApplications.js';
+import { adminRouter } from './routes/admin.js';
 import { publicContentRouter } from './routes/publicContent.js';
 import { cmsRouter } from './routes/cms.js';
 import { oauthRouter } from './routes/oauth.js';
@@ -34,6 +35,7 @@ export function createApp({ serveStatic = true } = {}) {
   app.use('/documents', documentsRouter);
   app.use('/states', statesRouter);
   app.use('/loan-applications', loanApplicationsRouter);
+  app.use('/admin', adminRouter);
   app.use('/public', publicContentRouter);
   app.use('/cms', cmsRouter);
   app.use('/auth/oauth', oauthRouter);
