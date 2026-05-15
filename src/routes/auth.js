@@ -8,6 +8,7 @@ import { sha256Hex } from '../lib/crypto.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../lib/jwt.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
+import { getSessionCookieOptions } from '../lib/cookieOptions.js';
 
 export const authRouter = Router();
 
@@ -32,19 +33,17 @@ function getClientIp(req) {
   );
 }
 
+function refreshCookieMaxAge() {
+  return Number(process.env.JWT_REFRESH_TTL_SECONDS || 60 * 60 * 24 * 30) * 1000;
+}
+
 function setRefreshCookie(res, token) {
-  const secure = process.env.API_COOKIE_SECURE === 'true';
-  res.cookie('refresh_token', token, {
-    httpOnly: true,
-    secure,
-    sameSite: 'lax',
-    path: '/auth/refresh',
-    maxAge: Number(process.env.JWT_REFRESH_TTL_SECONDS || 60 * 60 * 24 * 30) * 1000,
-  });
+  res.cookie('refresh_token', token, getSessionCookieOptions('/auth/refresh', refreshCookieMaxAge()));
 }
 
 function clearRefreshCookie(res) {
-  res.clearCookie('refresh_token', { path: '/auth/refresh' });
+  const opts = getSessionCookieOptions('/auth/refresh', 0);
+  res.clearCookie('refresh_token', { path: opts.path, secure: opts.secure, sameSite: opts.sameSite });
 }
 
 async function issueTokens({ userId, email, role, req }) {

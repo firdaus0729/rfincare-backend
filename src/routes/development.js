@@ -11,6 +11,7 @@ import {
   serializeEnvEntries,
   writeEnvFile,
 } from '../lib/envFile.js';
+import { getSessionCookieOptions } from '../lib/cookieOptions.js';
 
 export const developmentRouter = Router();
 
@@ -67,9 +68,15 @@ function verifySessionCookie(cookieValue) {
   return payload.exp > Date.now();
 }
 
+function getDevSessionToken(req) {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith('Bearer ')) return auth.slice(7).trim();
+  return req.cookies?.[SESSION_COOKIE] || null;
+}
+
 function requireDevSession(req, res, next) {
   if (!isPanelEnabled()) return panelDisabled(req, res);
-  if (!verifySessionCookie(req.cookies?.[SESSION_COOKIE])) {
+  if (!verifySessionCookie(getDevSessionToken(req))) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   return next();
@@ -90,24 +97,18 @@ developmentRouter.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid password' });
   }
   const { cookieValue } = signSession();
-  const secure = process.env.API_COOKIE_SECURE === 'true';
-  res.cookie(SESSION_COOKIE, cookieValue, {
-    httpOnly: true,
-    secure,
-    sameSite: 'lax',
-    maxAge: SESSION_TTL_MS,
-    path: '/development-panel',
-  });
-  return res.json({ success: true });
+  res.cookie(SESSION_COOKIE, cookieValue, getSessionCookieOptions('/development-panel', SESSION_TTL_MS));
+  return res.json({ success: true, sessionToken: cookieValue });
 });
 
 developmentRouter.post('/logout', (req, res) => {
-  res.clearCookie(SESSION_COOKIE, { path: '/development-panel' });
+  const opts = getSessionCookieOptions('/development-panel', 0);
+  res.clearCookie(SESSION_COOKIE, { path: opts.path, secure: opts.secure, sameSite: opts.sameSite });
   return res.json({ success: true });
 });
 
 developmentRouter.get('/session', (req, res) => {
-  return res.json({ authenticated: verifySessionCookie(req.cookies?.[SESSION_COOKIE]) });
+  return res.json({ authenticated: verifySessionCookie(getDevSessionToken(req)) });
 });
 
 developmentRouter.get('/env', requireDevSession, async (req, res, next) => {
