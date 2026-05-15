@@ -80,19 +80,25 @@ banksRouter.get('/', async (req, res, next) => {
     for (const product of products) {
       const loanType = resolveProductLoanType(product);
       const enriched = { ...product, loan_type: loanType };
-      if (loanTypeFilter && loanType !== loanTypeFilter) continue;
-      if (!productsByBank.has(product.bank_id)) productsByBank.set(product.bank_id, []);
-      productsByBank.get(product.bank_id).push(enriched);
+      if (!productsByBank.has(product.bank_id)) {
+        productsByBank.set(product.bank_id, { all: [], matched: [] });
+      }
+      const entry = productsByBank.get(product.bank_id);
+      entry.all.push(enriched);
+      if (!loanTypeFilter || loanType === loanTypeFilter) {
+        entry.matched.push(enriched);
+      }
     }
 
-    let result = rows.map((bank) => ({
-      ...bank,
-      bank_products: productsByBank.get(bank.id) || [],
-    }));
-
-    if (loanTypeFilter) {
-      result = result.filter((bank) => bank.bank_products.length > 0);
-    }
+    const result = rows.map((bank) => {
+      const entry = productsByBank.get(bank.id) || { all: [], matched: [] };
+      const bankProducts =
+        loanTypeFilter && entry.matched.length > 0 ? entry.matched : entry.all;
+      return {
+        ...bank,
+        bank_products: bankProducts,
+      };
+    });
 
     res.json(result);
   } catch (err) {
