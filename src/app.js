@@ -13,6 +13,10 @@ import { bankProductsRouter } from './routes/bankProducts.js';
 import { documentsRouter } from './routes/documents.js';
 import { statesRouter } from './routes/states.js';
 import { loanApplicationsRouter } from './routes/loanApplications.js';
+import { publicContentRouter } from './routes/publicContent.js';
+import { cmsRouter } from './routes/cms.js';
+import { oauthRouter } from './routes/oauth.js';
+import { developmentRouter } from './routes/development.js';
 
 export function createApp() {
   const app = express();
@@ -34,6 +38,10 @@ export function createApp() {
   app.use('/documents', documentsRouter);
   app.use('/states', statesRouter);
   app.use('/loan-applications', loanApplicationsRouter);
+  app.use('/public', publicContentRouter);
+  app.use('/cms', cmsRouter);
+  app.use('/auth/oauth', oauthRouter);
+  app.use('/development-panel', developmentRouter);
 
   app.use(errorMiddleware);
   
@@ -49,7 +57,12 @@ export function createApp() {
   // Catch-all route to serve the frontend for SPA routing
   app.get('*', (req, res) => {
     // Skip if it's an API request that didn't match (already handled by routers above)
-    if (req.path.startsWith('/api') || req.path.startsWith('/auth')) {
+    if (
+      req.path.startsWith('/api')
+      || req.path.startsWith('/auth')
+      || req.path.startsWith('/development-panel')
+      || req.path.startsWith('/public/runtime-config')
+    ) {
       return res.status(404).json({ message: 'Not Found' });
     }
     res.sendFile(path.join(buildPath, 'index.html'));

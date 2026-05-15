@@ -17,10 +17,10 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "mysql2": "^3.11.5",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "axios": "^1.8.4"
   },
   "devDependencies": {
-    "@supabase/supabase-js": "^2.49.1",
-    "axios": "^1.8.4"
+    "@supabase/supabase-js": "^2.49.1"
   }
 }
