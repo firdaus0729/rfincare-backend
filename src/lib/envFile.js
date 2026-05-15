@@ -1,3 +1,5 @@
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 
 export function parseEnvContent(content) {
@@ -83,6 +85,7 @@ export async function readEnvFile(path) {
 }
 
 export async function writeEnvFile(path, content) {
+  await mkdir(dirname(path), { recursive: true });
   const normalized = content.endsWith('\n') ? content : `${content}\n`;
   await writeFile(path, normalized, 'utf8');
 }

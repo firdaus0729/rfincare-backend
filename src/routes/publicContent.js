@@ -4,14 +4,15 @@ import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
 import { calculateEligibility } from '../lib/eligibilityEngine.js';
 import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
-import { FRONTEND_ENV_PATH } from '../lib/envPaths.js';
+import { resolveFrontendEnvPath } from '../lib/envPaths.js';
 import { entriesToObject, readEnvFile } from '../lib/envFile.js';
 
 export const publicContentRouter = Router();
 
 publicContentRouter.get('/runtime-config', async (_req, res, next) => {
   try {
-    const { entries } = await readEnvFile(FRONTEND_ENV_PATH);
+    const { path } = await resolveFrontendEnvPath();
+    const { entries } = await readEnvFile(path);
     const vars = entriesToObject(entries);
     const vite = Object.fromEntries(
       Object.entries(vars).filter(([key]) => key.startsWith('VITE_')),

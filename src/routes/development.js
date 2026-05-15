@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 
-import { BACKEND_ENV_PATH, FRONTEND_ENV_PATH } from '../lib/envPaths.js';
+import { BACKEND_ENV_PATH, resolveFrontendEnvPath } from '../lib/envPaths.js';
 import {
   entriesToObject,
   objectToEntries,
@@ -113,9 +113,10 @@ developmentRouter.get('/session', (req, res) => {
 
 developmentRouter.get('/env', requireDevSession, async (req, res, next) => {
   try {
+    const frontendTarget = await resolveFrontendEnvPath();
     const [backend, frontend] = await Promise.all([
       readEnvFile(BACKEND_ENV_PATH),
-      readEnvFile(FRONTEND_ENV_PATH),
+      readEnvFile(frontendTarget.path),
     ]);
     res.json({
       backend: {
@@ -124,7 +125,9 @@ developmentRouter.get('/env', requireDevSession, async (req, res, next) => {
         variables: entriesToObject(backend.entries),
       },
       frontend: {
-        path: FRONTEND_ENV_PATH,
+        path: frontendTarget.path,
+        storageMode: frontendTarget.storageMode,
+        hint: frontendTarget.hint,
         content: frontend.content,
         variables: entriesToObject(frontend.entries),
       },
@@ -160,17 +163,24 @@ developmentRouter.put('/env', requireDevSession, async (req, res, next) => {
       reloadBackendEnv();
     }
 
+    let frontendMessage = null;
     if (input.target === 'frontend') {
-      const content = await resolveContent(FRONTEND_ENV_PATH, input.variables);
-      await writeEnvFile(FRONTEND_ENV_PATH, content);
+      const frontendTarget = await resolveFrontendEnvPath();
+      const content = await resolveContent(frontendTarget.path, input.variables);
+      await writeEnvFile(frontendTarget.path, content);
       saved.push('frontend');
+      frontendMessage =
+        frontendTarget.storageMode === 'server-store'
+          ? frontendTarget.hint
+          : 'Frontend .env saved. Reload the page or restart the Vite dev server to apply VITE_* values.';
     }
 
     res.json({
       success: true,
       saved,
       message:
-        'Environment files updated. Backend variables are active immediately. Reload the page to apply VITE_* runtime config, or restart the Vite dev server for build-time values.',
+        frontendMessage
+        || 'Environment files updated. Backend variables are active immediately.',
     });
   } catch (err) {
     next(err);
