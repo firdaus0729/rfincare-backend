@@ -27,6 +27,7 @@ export function getPool() {
     namedPlaceholders: true,
     decimalNumbers: true,
     timezone: 'Z',
+    charset: 'utf8mb4_unicode_ci',
   });
 
   return pool;

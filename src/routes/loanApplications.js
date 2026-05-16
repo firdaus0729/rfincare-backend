@@ -382,6 +382,10 @@ loanApplicationsRouter.patch(
         ...rest
       } = input;
 
+      const statusValue = status ?? null;
+      const markReviewed =
+        statusValue === 'approved' || statusValue === 'rejected';
+
       await pool.execute(
         `UPDATE loan_applications SET
           status = COALESCE(:status, status),
@@ -391,19 +395,20 @@ loanApplicationsRouter.patch(
           selected_bank_id = COALESCE(:selected_bank_id, selected_bank_id),
           assigned_employee_id = COALESCE(:assigned_employee_id, assigned_employee_id),
           eligibility_status = COALESCE(:eligibility_status, eligibility_status),
-          reviewed_by = CASE WHEN :status IS NOT NULL AND :status IN ('approved','rejected') THEN :reviewed_by ELSE reviewed_by END,
-          reviewed_at = CASE WHEN :status IS NOT NULL AND :status IN ('approved','rejected') THEN NOW(3) ELSE reviewed_at END,
+          reviewed_by = CASE WHEN :mark_reviewed = 1 THEN :reviewed_by ELSE reviewed_by END,
+          reviewed_at = CASE WHEN :mark_reviewed = 1 THEN NOW(3) ELSE reviewed_at END,
           data = :data
          WHERE id = :id`,
         {
           id: req.params.id,
-          status: status || null,
+          status: statusValue,
           status_notes: status_notes || null,
           review_notes: review_notes || null,
           rejection_reason: rejection_reason || null,
           selected_bank_id: selected_bank_id || null,
           assigned_employee_id: assigned_employee_id || null,
           eligibility_status: eligibility_status || null,
+          mark_reviewed: markReviewed ? 1 : 0,
           reviewed_by: req.auth.userId,
           data: JSON.stringify({ ...mergedData, ...rest }),
         },

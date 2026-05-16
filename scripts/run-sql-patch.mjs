@@ -30,7 +30,14 @@ async function main() {
   }
 
   const sql = readFileSync(sqlPath, 'utf8');
-  const conn = await mysql.createConnection({ host, user, password, database, port });
+  const conn = await mysql.createConnection({
+    host,
+    user,
+    password,
+    database,
+    port,
+    multipleStatements: true,
+  });
 
   try {
     await conn.query(sql);

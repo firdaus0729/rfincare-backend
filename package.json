@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "db:migrate": "node scripts/mysql-apply-migrations.mjs",
     "db:patch:story-photo": "node scripts/run-sql-patch.mjs migrations/005_success_stories_photo.sql",
+    "db:patch:collation": "node scripts/run-sql-patch.mjs migrations/006_collation_unicode_ci.sql",
     "seed:admin": "node scripts/seed-admin.js",
     "seed:demo-users": "node scripts/seed-demo-users.js",
     "seed:bank-products": "node scripts/seed-bank-products.js"
