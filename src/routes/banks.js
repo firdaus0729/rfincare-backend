@@ -6,6 +6,7 @@ import { ensureBankSchema } from '../db/ensureBankSchema.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { newId } from '../lib/ids.js';
+import { listRulesForBank } from './approvalMatrixRules.js';
 
 export const banksRouter = Router();
 
@@ -169,6 +170,15 @@ banksRouter.get('/', async (req, res, next) => {
   }
 });
 
+banksRouter.get('/:bankId/approval-matrix-rules', authenticate, async (req, res, next) => {
+  try {
+    const pool = getPool();
+    res.json(await listRulesForBank(pool, req.params.bankId));
+  } catch (err) {
+    next(err);
+  }
+});
+
 banksRouter.get('/:id', async (req, res, next) => {
   try {
     const pool = getPool();
@@ -313,10 +323,24 @@ banksRouter.post(
       const pool = getPool();
       const id = newId();
       const name = req.body?.name || 'Product';
+      const { name: _n, bank_id: _b, bankId: _bid, is_active: _a, ...rest } = req.body || {};
+      let productData = rest;
+      if (rest.data != null) {
+        productData =
+          typeof rest.data === 'string'
+            ? (() => {
+                try {
+                  return JSON.parse(rest.data);
+                } catch {
+                  return rest;
+                }
+              })()
+            : rest.data;
+      }
       await pool.execute(
         `INSERT INTO bank_products (id, bank_id, name, is_active, data)
          VALUES (:id, :bankId, :name, 1, :data)`,
-        { id, bankId: req.params.id, name, data: JSON.stringify(req.body || {}) },
+        { id, bankId: req.params.id, name, data: JSON.stringify(productData) },
       );
       const [[row]] = await pool.execute(`SELECT * FROM bank_products WHERE id = :id`, { id });
       res.status(201).json(row);

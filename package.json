@@ -10,7 +10,8 @@
     "db:patch:collation": "node scripts/run-sql-patch.mjs migrations/006_collation_unicode_ci.sql",
     "seed:admin": "node scripts/seed-admin.js",
     "seed:demo-users": "node scripts/seed-demo-users.js",
-    "seed:bank-products": "node scripts/seed-bank-products.js"
+    "seed:bank-products": "node scripts/seed-bank-products.js",
+    "seed:approval-matrix": "node scripts/seed-approval-matrix.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

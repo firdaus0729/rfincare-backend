@@ -19,9 +19,13 @@ import { cmsRouter } from './routes/cms.js';
 import { oauthRouter } from './routes/oauth.js';
 import { developmentRouter } from './routes/development.js';
 import { auditLogsRouter } from './routes/auditLogs.js';
+import { approvalMatrixRouter } from './routes/approvalMatrixRules.js';
+import { notificationsRouter } from './routes/notifications.js';
 import { getCorsOptions } from './lib/corsOptions.js';
 
 export function createApp({ serveStatic = true } = {}) {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
   const app = express();
 
   app.use(cors(getCorsOptions()));
@@ -42,6 +46,8 @@ export function createApp({ serveStatic = true } = {}) {
   app.use('/auth/oauth', oauthRouter);
   app.use('/development-panel', developmentRouter);
   app.use('/audit-logs', auditLogsRouter);
+  app.use('/approval-matrix-rules', approvalMatrixRouter);
+  app.use('/notifications', notificationsRouter);
 
   const uploadDir = process.env.UPLOAD_DIR
     ? path.resolve(process.env.UPLOAD_DIR)
@@ -54,8 +60,6 @@ export function createApp({ serveStatic = true } = {}) {
     return app;
   }
 
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
   const buildPath = process.env.FRONTEND_DIST
     ? path.resolve(process.env.FRONTEND_DIST)
     : path.resolve(__dirname, '../../frontend/dist');

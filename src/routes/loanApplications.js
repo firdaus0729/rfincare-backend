@@ -6,6 +6,7 @@ import { newId } from '../lib/ids.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { hasPermission } from '../auth/permissions.js';
+import { createCustomerNotification } from './notifications.js';
 
 export const loanApplicationsRouter = Router();
 
@@ -470,6 +471,16 @@ loanApplicationsRouter.post(
          VALUES (:id, :application_id, 'submitted', 'Application submitted')`,
         { id: newId(), application_id: req.params.id },
       );
+
+      try {
+        await createCustomerNotification(pool, {
+          customerId: existing.customer_id,
+          title: 'Application submitted',
+          message: 'Your loan application has been submitted successfully. We will notify you of updates.',
+        });
+      } catch {
+        /* notifications table may be missing on older DBs */
+      }
 
       const row = await fetchApplicationById(pool, req.params.id);
       res.json(formatApplication(row));

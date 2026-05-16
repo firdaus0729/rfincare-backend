@@ -3,8 +3,12 @@ import { Router } from 'express';
 import { getPool } from '../db/pool.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
+import { approvalMatrixRouter } from './approvalMatrixRules.js';
 
 export const adminRouter = Router();
+
+/** Alias: /admin/approval-matrix-rules (same handlers as /approval-matrix-rules) */
+adminRouter.use('/approval-matrix-rules', approvalMatrixRouter);
 
 function mapAgentProfile(row) {
   return {
