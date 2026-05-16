@@ -25,8 +25,61 @@ function canReadAllApplications(role) {
   return hasPermission(role, 'read:all_loan_applications') || hasPermission(role, 'read:*');
 }
 
+const LOAN_TYPE_LABELS = {
+  personal_loan: 'Personal Loan',
+  home_loan: 'Home Loan',
+  business_loan: 'Business Loan',
+  auto_loan: 'Auto Loan',
+  education_loan: 'Education Loan',
+};
+
+function humanizeLoanType(value) {
+  if (value == null || value === '') return null;
+  const key = String(value).toLowerCase().replace(/-/g, '_');
+  if (LOAN_TYPE_LABELS[key]) return LOAN_TYPE_LABELS[key];
+  if (key.endsWith('_loan') && LOAN_TYPE_LABELS[key]) return LOAN_TYPE_LABELS[key];
+  const slug = key.replace(/_loan$/, '');
+  if (LOAN_TYPE_LABELS[`${slug}_loan`]) return LOAN_TYPE_LABELS[`${slug}_loan`];
+  return String(value)
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Read loan fields from assessment payload (supports legacy + current field names). */
+function extractLoanFields(data) {
+  const d = data && typeof data === 'object' ? data : {};
+  const loanAmount =
+    d.loan_amount ??
+    d.loanAmount ??
+    d.requested_loan_amount ??
+    d.requestedLoanAmount ??
+    null;
+  const loanTypeRaw =
+    d.loan_type ?? d.loanType ?? d.loan_purpose ?? d.loanPurpose ?? null;
+  return {
+    loan_amount: loanAmount != null && loanAmount !== '' ? Number(loanAmount) : null,
+    loan_type: loanTypeRaw,
+    loan_type_label: humanizeLoanType(loanTypeRaw),
+    admin_priority: d.admin_priority || d.adminPriority || 'medium',
+  };
+}
+
+function normalizeApplicationPayload(body) {
+  const base = { ...(body || {}) };
+  const extracted = extractLoanFields(base);
+  return {
+    ...base,
+    loan_amount: extracted.loan_amount ?? base.loan_amount,
+    loan_type: extracted.loan_type ?? base.loan_type,
+    requested_loan_amount:
+      base.requested_loan_amount ?? base.requestedLoanAmount ?? extracted.loan_amount,
+    loan_purpose: base.loan_purpose ?? base.loanPurpose ?? extracted.loan_type,
+  };
+}
+
 function formatApplication(row) {
   const data = parseJson(row.data);
+  const loan = extractLoanFields(data);
   return {
     id: row.id,
     application_number: row.application_number,
@@ -44,9 +97,10 @@ function formatApplication(row) {
     reviewed_at: row.reviewed_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
-    loan_type: data.loan_type || data.loanType || null,
-    loan_amount: data.loan_amount ?? data.loanAmount ?? null,
-    admin_priority: data.admin_priority || data.adminPriority || 'medium',
+    loan_type: loan.loan_type,
+    loan_type_label: loan.loan_type_label,
+    loan_amount: loan.loan_amount,
+    admin_priority: loan.admin_priority,
     customer: row.customer_id
       ? {
           id: row.customer_id,
@@ -248,10 +302,10 @@ loanApplicationsRouter.post(
       const body = req.body || {};
       const id = newId();
       const customerId = body.customer_id || req.auth.userId;
-      const payload = {
+      const payload = normalizeApplicationPayload({
         ...body,
         customer_id: customerId,
-      };
+      });
 
       await pool.execute(
         `INSERT INTO loan_applications (
