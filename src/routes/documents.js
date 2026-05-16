@@ -20,10 +20,52 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+documentsRouter.get(
+  '/',
+  authenticate,
+  authorize({
+    resource: 'documents',
+    action: 'read',
+    getOwnerId: (req) => req.query.customerId || req.auth.userId,
+  }),
+  async (req, res, next) => {
+    try {
+      const pool = getPool();
+      const customerId = req.query.customerId || req.auth.userId;
+      const applicationId = req.query.applicationId || null;
+
+      if (customerId !== req.auth.userId && req.auth.role === 'customer') {
+        const e = new Error('Insufficient permissions');
+        e.status = 403;
+        throw e;
+      }
+
+      const conditions = ['customer_id = :customer_id'];
+      const params = { customer_id: customerId };
+      if (applicationId) {
+        conditions.push('application_id = :application_id');
+        params.application_id = applicationId;
+      }
+
+      const [rows] = await pool.execute(
+        `SELECT * FROM customer_documents WHERE ${conditions.join(' AND ')} ORDER BY uploaded_at DESC`,
+        params,
+      );
+      res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 documentsRouter.post(
   '/',
   authenticate,
-  authorize({ resource: 'documents', action: 'update' }),
+  authorize({
+    resource: 'documents',
+    action: 'update',
+    getOwnerId: (req) => req.body.customerId || req.auth.userId,
+  }),
   upload.single('file'),
   async (req, res, next) => {
     try {
@@ -75,7 +117,18 @@ documentsRouter.post(
 documentsRouter.get(
   '/:id/download',
   authenticate,
-  authorize({ resource: 'documents', action: 'read' }),
+  authorize({
+    resource: 'documents',
+    action: 'read',
+    getOwnerId: async (req) => {
+      const pool = getPool();
+      const [[doc]] = await pool.execute(
+        `SELECT customer_id FROM customer_documents WHERE id = :id LIMIT 1`,
+        { id: req.params.id },
+      );
+      return doc?.customer_id;
+    },
+  }),
   async (req, res, next) => {
     try {
       const pool = getPool();
@@ -97,7 +150,18 @@ documentsRouter.get(
 documentsRouter.delete(
   '/:id',
   authenticate,
-  authorize({ resource: 'documents', action: 'update' }),
+  authorize({
+    resource: 'documents',
+    action: 'update',
+    getOwnerId: async (req) => {
+      const pool = getPool();
+      const [[doc]] = await pool.execute(
+        `SELECT customer_id FROM customer_documents WHERE id = :id LIMIT 1`,
+        { id: req.params.id },
+      );
+      return doc?.customer_id;
+    },
+  }),
   async (req, res, next) => {
     try {
       const pool = getPool();

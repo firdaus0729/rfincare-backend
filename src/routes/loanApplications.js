@@ -487,8 +487,15 @@ loanApplicationsRouter.post(
         throw e;
       }
 
-      const consents = req.body?.consents || [];
-      for (const consent of consents) {
+      const raw = req.body?.consents;
+      const consentEntries = Array.isArray(raw)
+        ? raw
+        : raw && typeof raw === 'object'
+          ? Object.entries(raw).map(([type, granted]) => ({ type, granted: Boolean(granted) }))
+          : [];
+
+      for (const consent of consentEntries) {
+        const granted = consent.granted ?? consent.isGranted ?? false;
         await pool.execute(
           `INSERT INTO application_consents (
             id, application_id, customer_id, consent_type, is_granted, granted_at
@@ -500,8 +507,8 @@ loanApplicationsRouter.post(
             application_id: req.params.id,
             customer_id: existing.customer_id,
             consent_type: consent.type || consent.consentType || 'general',
-            is_granted: consent.granted ?? consent.isGranted ? 1 : 0,
-            granted_at: consent.granted ?? consent.isGranted ? new Date() : null,
+            is_granted: granted ? 1 : 0,
+            granted_at: granted ? new Date() : null,
           },
         );
       }

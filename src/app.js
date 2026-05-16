@@ -43,6 +43,11 @@ export function createApp({ serveStatic = true } = {}) {
   app.use('/development-panel', developmentRouter);
   app.use('/audit-logs', auditLogsRouter);
 
+  const uploadDir = process.env.UPLOAD_DIR
+    ? path.resolve(process.env.UPLOAD_DIR)
+    : path.resolve(__dirname, '../uploads');
+  app.use('/uploads', express.static(uploadDir));
+
   app.use(errorMiddleware);
 
   if (!serveStatic) {

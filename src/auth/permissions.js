@@ -14,6 +14,8 @@ export const PERMISSIONS = {
     'create:loan_application',
     'read:own_loan_applications',
     'update:own_loan_applications',
+    'read:own_documents',
+    'update:own_documents',
     'read:banks',
     'read:bank_products',
   ],

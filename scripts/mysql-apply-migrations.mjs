@@ -27,9 +27,18 @@ async function main() {
   const conn = await mysql.createConnection({ host, user, password, database, port, multipleStatements: true });
   for (const file of files) {
     const sql = readFileSync(resolve(migrationsDir, file), 'utf8');
-    await conn.query(sql);
-    // eslint-disable-next-line no-console
-    console.log(`Applied: ${file}`);
+    try {
+      await conn.query(sql);
+      // eslint-disable-next-line no-console
+      console.log(`Applied: ${file}`);
+    } catch (err) {
+      if (err.code === 'ER_DUP_FIELDNAME') {
+        // eslint-disable-next-line no-console
+        console.warn(`Skipped (already applied): ${file} — ${err.sqlMessage}`);
+        continue;
+      }
+      throw err;
+    }
   }
   await conn.end();
   // eslint-disable-next-line no-console

@@ -1,4 +1,7 @@
 import { Router } from 'express';
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import multer from 'multer';
 import { z } from 'zod';
 import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
@@ -8,6 +11,25 @@ import { resolveFrontendEnvPath } from '../lib/envPaths.js';
 import { entriesToObject, readEnvFile } from '../lib/envFile.js';
 
 export const publicContentRouter = Router();
+
+const uploadRoot = process.env.UPLOAD_DIR || './uploads';
+const storyPhotoDir = resolve(uploadRoot, 'stories');
+mkdirSync(storyPhotoDir, { recursive: true });
+
+const storyPhotoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, storyPhotoDir),
+    filename: (_req, file, cb) => {
+      const safe = `${Date.now()}-${Math.random().toString(36).slice(2)}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      cb(null, safe);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok = ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype);
+    cb(ok ? null : new Error('Photo must be JPG, PNG, or WebP'), ok);
+  },
+});
 
 publicContentRouter.get('/runtime-config', async (_req, res, next) => {
   try {
@@ -70,7 +92,7 @@ publicContentRouter.get('/success-stories', async (req, res, next) => {
     const pool = getPool();
     const [rows] = await pool.query(
       `SELECT id, submitter_name AS name, story_type AS storyType, story_text AS storyText,
-              location, loan_amount AS loanAmount, created_at AS createdAt
+              location, loan_amount AS loanAmount, photo_url AS photoUrl, created_at AS createdAt
        FROM success_stories WHERE moderation_status = 'approved'
        ORDER BY display_order DESC, moderated_at DESC LIMIT 20`,
     );
@@ -90,14 +112,19 @@ const StorySchema = z.object({
   loanAmount: z.string().optional(),
 });
 
-publicContentRouter.post('/success-stories', async (req, res, next) => {
+publicContentRouter.post('/success-stories', storyPhotoUpload.single('photo'), async (req, res, next) => {
   try {
     const input = StorySchema.parse(req.body);
     const pool = getPool();
     const id = newId();
+    const photoUrl = req.file ? `/uploads/stories/${req.file.filename}` : null;
+
     await pool.execute(
-      `INSERT INTO success_stories (id, submitter_name, submitter_email, submitter_phone, story_type, story_text, location, loan_amount, moderation_status)
-       VALUES (:id, :name, :email, :phone, :type, :text, :loc, :amt, 'pending')`,
+      `INSERT INTO success_stories (
+         id, submitter_name, submitter_email, submitter_phone, story_type, story_text,
+         location, loan_amount, photo_url, moderation_status
+       )
+       VALUES (:id, :name, :email, :phone, :type, :text, :loc, :amt, :photo, 'pending')`,
       {
         id,
         name: input.submitterName,
@@ -107,10 +134,15 @@ publicContentRouter.post('/success-stories', async (req, res, next) => {
         text: input.storyText,
         loc: input.location ?? null,
         amt: input.loanAmount ?? null,
+        photo: photoUrl,
       },
     );
-    res.status(201).json({ id, status: 'pending' });
+    res.status(201).json({ id, status: 'pending', photoUrl });
   } catch (err) {
+    if (err?.code === 'ER_BAD_FIELD_ERROR' && String(err?.message || '').includes('photo_url')) {
+      err.status = 500;
+      err.message = 'Database missing photo_url column. Run: npm run db:migrate';
+    }
     next(err);
   }
 });
