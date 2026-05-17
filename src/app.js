@@ -21,6 +21,8 @@ import { developmentRouter } from './routes/development.js';
 import { auditLogsRouter } from './routes/auditLogs.js';
 import { approvalMatrixRouter } from './routes/approvalMatrixRules.js';
 import { notificationsRouter } from './routes/notifications.js';
+import { leadsRouter } from './routes/leads.js';
+import { eligibilityAssessmentsRouter } from './routes/eligibilityAssessments.js';
 import { getCorsOptions } from './lib/corsOptions.js';
 
 export function createApp({ serveStatic = true } = {}) {
@@ -48,6 +50,8 @@ export function createApp({ serveStatic = true } = {}) {
   app.use('/audit-logs', auditLogsRouter);
   app.use('/approval-matrix-rules', approvalMatrixRouter);
   app.use('/notifications', notificationsRouter);
+  app.use('/leads', leadsRouter);
+  app.use('/eligibility-assessments', eligibilityAssessmentsRouter);
 
   const uploadDir = process.env.UPLOAD_DIR
     ? path.resolve(process.env.UPLOAD_DIR)
