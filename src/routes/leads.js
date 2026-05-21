@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
 import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
+import { createResumeToken, upsertLeadFromDraft } from '../lib/resumeTokens.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { hasPermission } from '../auth/permissions.js';
 
@@ -255,7 +256,116 @@ leadsRouter.post('/drafts', async (req, res, next) => {
       );
     }
 
-    res.json({ ok: true, sessionKey: body.sessionKey });
+    const leadId = await upsertLeadFromDraft({
+      sessionKey: body.sessionKey,
+      formData: body.formData,
+      loanType: body.loanType,
+      currentStep: body.currentStep,
+      applicationId: body.applicationId,
+    });
+
+    res.json({ ok: true, sessionKey: body.sessionKey, leadId });
+  } catch (err) {
+    next(err);
+  }
+});
+
+leadsRouter.post('/drafts/resume-link', async (req, res, next) => {
+  try {
+    const body = z
+      .object({
+        sessionKey: z.string().min(8),
+        leadId: z.string().optional(),
+        frontendOrigin: z.string().url().optional(),
+        sendNotification: z.boolean().optional(),
+        email: z.string().email().optional(),
+        phone: z.string().optional(),
+        channel: z.enum(['email', 'sms', 'whatsapp']).optional(),
+      })
+      .parse(req.body);
+
+    const pool = getPool();
+    const [[draft]] = await pool.execute(
+      `SELECT session_key FROM application_form_drafts WHERE session_key = :sk LIMIT 1`,
+      { sk: body.sessionKey },
+    );
+    if (!draft) {
+      return res.status(404).json({ error: 'No saved draft for this session' });
+    }
+
+    const link = await createResumeToken({
+      sessionKey: body.sessionKey,
+      leadId: body.leadId,
+      frontendOrigin: body.frontendOrigin,
+    });
+
+    if (body.sendNotification && (body.email || body.phone)) {
+      const message = `Continue your Rfincare application: ${link.url}`;
+      await sendOtpNotification({
+        email: body.email,
+        phone: body.phone,
+        otp: message,
+        channel: body.channel || 'email',
+      });
+    }
+
+    res.json({
+      url: link.url,
+      expiresAt: link.expiresAt,
+      ...(process.env.LOG_OTP === 'true' ? { devToken: link.token } : {}),
+    });
+  } catch (err) {
+    if (err?.code === 'ER_NO_SUCH_TABLE') {
+      err.status = 503;
+      err.message = 'Run migration 008_milestone2_resume_tokens.sql';
+    }
+    next(err);
+  }
+});
+
+leadsRouter.post('/:id/resume-link', authenticate, async (req, res, next) => {
+  try {
+    const role = req.auth.role;
+    if (!hasPermission(role, 'manage:*') && role !== 'admin' && role !== 'super_admin' && role !== 'employee') {
+      const e = new Error('Insufficient permissions');
+      e.status = 403;
+      throw e;
+    }
+
+    const pool = getPool();
+    const [[lead]] = await pool.execute(`SELECT * FROM marketing_leads WHERE id = :id`, {
+      id: req.params.id,
+    });
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    if (!lead.session_key) {
+      return res.status(400).json({ error: 'Lead has no linked application session yet' });
+    }
+
+    const body = z
+      .object({
+        frontendOrigin: z.string().url().optional(),
+        sendNotification: z.boolean().optional(),
+        channel: z.enum(['email', 'sms', 'whatsapp']).optional(),
+      })
+      .parse(req.body || {});
+
+    const link = await createResumeToken({
+      sessionKey: lead.session_key,
+      leadId: lead.id,
+      frontendOrigin: body.frontendOrigin,
+    });
+
+    if (body.sendNotification) {
+      const message = `Continue your Rfincare application: ${link.url}`;
+      await sendOtpNotification({
+        email: lead.email,
+        phone: lead.phone,
+        otp: message,
+        channel: body.channel || 'email',
+      });
+    }
+
+    res.json({ url: link.url, expiresAt: link.expiresAt, lead: formatLead(lead) });
   } catch (err) {
     next(err);
   }

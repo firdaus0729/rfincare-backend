@@ -7,6 +7,7 @@ import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
 import { calculateEligibility } from '../lib/eligibilityEngine.js';
 import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
+import { createResumeToken, resolveResumeToken } from '../lib/resumeTokens.js';
 import { resolveFrontendEnvPath } from '../lib/envPaths.js';
 import { entriesToObject, readEnvFile } from '../lib/envFile.js';
 
@@ -230,6 +231,149 @@ publicContentRouter.post('/status-check/verify', async (req, res, next) => {
 
     res.json({ application: app });
   } catch (err) {
+    next(err);
+  }
+});
+
+const DraftRecoveryRequestSchema = z.object({
+  email: z.string().email(),
+  phone: z.string().min(10),
+  channel: z.enum(['email', 'sms', 'whatsapp']).default('email'),
+});
+
+publicContentRouter.post('/draft-recovery/request-otp', async (req, res, next) => {
+  try {
+    const input = DraftRecoveryRequestSchema.parse(req.body);
+    const phone = input.phone.replace(/\D/g, '').slice(-10);
+    const pool = getPool();
+
+    const [[row]] = await pool.execute(
+      `SELECT ml.id AS lead_id, ml.session_key
+       FROM marketing_leads ml
+       INNER JOIN application_form_drafts d ON d.session_key = ml.session_key
+       WHERE ml.email = :email AND ml.phone = :phone
+       ORDER BY d.updated_at DESC
+       LIMIT 1`,
+      { email: input.email, phone },
+    );
+
+    if (!row?.session_key) {
+      return res.status(404).json({
+        error: 'No saved application found for this email and mobile number.',
+      });
+    }
+
+    const otp = generateOtp();
+    const id = newId();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await pool.execute(
+      `INSERT INTO lead_otps (id, lead_id, email, phone, otp_hash, purpose, channel, expires_at)
+       VALUES (:id, :lead_id, :email, :phone, :hash, 'draft_resume', :channel, :exp)`,
+      {
+        id,
+        lead_id: row.lead_id,
+        email: input.email,
+        phone,
+        hash: hashOtp(otp),
+        channel: input.channel,
+        exp: expiresAt,
+      },
+    );
+
+    await sendOtpNotification({
+      email: input.email,
+      phone,
+      otp,
+      channel: input.channel,
+    });
+
+    res.json({ success: true, message: 'OTP sent', expiresInSeconds: 600 });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const DraftRecoveryVerifySchema = z.object({
+  email: z.string().email(),
+  phone: z.string().min(10),
+  otp: z.string().length(6),
+  frontendOrigin: z.string().url().optional(),
+});
+
+publicContentRouter.post('/draft-recovery/verify', async (req, res, next) => {
+  try {
+    const input = DraftRecoveryVerifySchema.parse(req.body);
+    const phone = input.phone.replace(/\D/g, '').slice(-10);
+    const pool = getPool();
+
+    const [[otpRow]] = await pool.execute(
+      `SELECT id, lead_id FROM lead_otps
+       WHERE email = :email AND phone = :phone AND otp_hash = :hash
+         AND purpose = 'draft_resume' AND verified_at IS NULL AND expires_at > NOW(3)
+       ORDER BY created_at DESC LIMIT 1`,
+      { email: input.email, phone, hash: hashOtp(input.otp) },
+    );
+
+    if (!otpRow) {
+      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    }
+
+    await pool.execute(`UPDATE lead_otps SET verified_at = NOW(3) WHERE id = :id`, { id: otpRow.id });
+
+    const [[lead]] = await pool.execute(
+      `SELECT ml.id, ml.session_key
+       FROM marketing_leads ml
+       INNER JOIN application_form_drafts d ON d.session_key = ml.session_key
+       WHERE ml.id = :id
+       LIMIT 1`,
+      { id: otpRow.lead_id },
+    );
+
+    if (!lead?.session_key) {
+      return res.status(404).json({ error: 'Saved application no longer available' });
+    }
+
+    const link = await createResumeToken({
+      sessionKey: lead.session_key,
+      leadId: lead.id,
+      frontendOrigin: input.frontendOrigin,
+    });
+
+    res.json({ resumeUrl: link.url, expiresAt: link.expiresAt });
+  } catch (err) {
+    if (err?.code === 'ER_NO_SUCH_TABLE') {
+      err.status = 503;
+      err.message = 'Run migration 008_milestone2_resume_tokens.sql';
+    }
+    next(err);
+  }
+});
+
+publicContentRouter.get('/resume-application/:token', async (req, res, next) => {
+  try {
+    const resolved = await resolveResumeToken(req.params.token);
+    if (!resolved) {
+      return res.status(404).json({ error: 'Invalid resume link' });
+    }
+    if (resolved.error === 'expired') {
+      return res.status(410).json({ error: 'This resume link has expired' });
+    }
+    if (resolved.error === 'already_used') {
+      return res.status(410).json({ error: 'This resume link was already used' });
+    }
+
+    res.json({
+      sessionKey: resolved.sessionKey,
+      leadId: resolved.leadId,
+      loanType: resolved.loanType,
+      currentStep: resolved.currentStep,
+      applicationId: resolved.applicationId,
+    });
+  } catch (err) {
+    if (err?.code === 'ER_NO_SUCH_TABLE') {
+      return res.status(503).json({ error: 'Resume links not enabled on server yet' });
+    }
     next(err);
   }
 });
