@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 import { z } from 'zod';
 
 import { getPool } from '../db/pool.js';
@@ -9,6 +10,7 @@ import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../lib/jw
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { getSessionCookieOptions } from '../lib/cookieOptions.js';
+import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
 
 export const authRouter = Router();
 
@@ -530,6 +532,125 @@ authRouter.delete('/sessions/:id', authenticate, async (req, res, next) => {
       { id, userId: req.auth.userId }
     );
     res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const ApplicationOtpRequestSchema = z.object({
+  phone: z.string().min(10),
+  email: z.string().email(),
+});
+
+const ApplicationOtpVerifySchema = z.object({
+  phone: z.string().min(10),
+  otp: z.string().length(6),
+  email: z.string().email(),
+  fullName: z.string().min(1).optional(),
+});
+
+function normalizePhone(phone) {
+  const digits = String(phone).replace(/\D/g, '');
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+authRouter.post('/application/request-otp', async (req, res, next) => {
+  try {
+    const input = ApplicationOtpRequestSchema.parse(req.body);
+    const phone = normalizePhone(input.phone);
+    const pool = getPool();
+    const otp = generateOtp();
+    const id = newId();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await pool.execute(
+      `INSERT INTO lead_otps (id, lead_id, email, phone, otp_hash, purpose, channel, expires_at)
+       VALUES (:id, NULL, :email, :phone, :hash, 'application_submit', 'sms', :exp)`,
+      {
+        id,
+        email: input.email,
+        phone,
+        hash: hashOtp(otp),
+        exp: expiresAt,
+      },
+    );
+
+    await sendOtpNotification({ phone, email: input.email, otp, channel: 'sms' });
+    res.json({ success: true, expiresInSeconds: 600 });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post('/application/verify-otp', async (req, res, next) => {
+  try {
+    const input = ApplicationOtpVerifySchema.parse(req.body);
+    const phone = normalizePhone(input.phone);
+    const pool = getPool();
+
+    const [[otpRow]] = await pool.execute(
+      `SELECT id FROM lead_otps
+       WHERE phone = :phone AND otp_hash = :hash AND purpose = 'application_submit'
+         AND verified_at IS NULL AND expires_at > NOW(3)
+       ORDER BY created_at DESC LIMIT 1`,
+      { phone, hash: hashOtp(input.otp) },
+    );
+
+    if (!otpRow) {
+      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    }
+
+    await pool.execute(`UPDATE lead_otps SET verified_at = NOW(3) WHERE id = :id`, { id: otpRow.id });
+
+    let [[profile]] = await pool.execute(
+      `SELECT id, email, role FROM user_profiles
+       WHERE phone = :phone OR email = :email
+       ORDER BY (phone = :phone) DESC
+       LIMIT 1`,
+      { phone, email: input.email },
+    );
+
+    let userId;
+    let email = input.email;
+    let role = 'customer';
+
+    if (!profile) {
+      userId = newId();
+      const password = `RFC${crypto.randomBytes(4).toString('hex')}A1!`;
+      const passwordHash = await bcrypt.hash(password, 12);
+      await pool.execute(
+        `INSERT INTO auth_users (id, email, password_hash) VALUES (:id, :email, :ph)`,
+        { id: userId, email: input.email, ph: passwordHash },
+      );
+      await pool.execute(
+        `INSERT INTO user_profiles (id, email, full_name, phone, role, account_status, is_active)
+         VALUES (:id, :email, :fullName, :phone, 'customer', 'active', 1)`,
+        {
+          id: userId,
+          email: input.email,
+          fullName: input.fullName ?? null,
+          phone,
+        },
+      );
+    } else {
+      userId = profile.id;
+      email = profile.email;
+      role = profile.role;
+      await pool.execute(
+        `UPDATE user_profiles SET phone = COALESCE(phone, :phone), full_name = COALESCE(full_name, :fullName)
+         WHERE id = :id`,
+        { id: userId, phone, fullName: input.fullName ?? null },
+      );
+    }
+
+    const { accessJwt, refreshJwt } = await issueTokens({ userId, email, role, req });
+    setRefreshCookie(res, refreshJwt);
+
+    res.json({
+      verified: true,
+      accessToken: accessJwt,
+      user: { id: userId, email, role },
+    });
   } catch (err) {
     next(err);
   }

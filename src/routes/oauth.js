@@ -7,7 +7,12 @@ import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
 import { sha256Hex } from '../lib/crypto.js';
 import { signAccessToken, signRefreshToken } from '../lib/jwt.js';
-import { getOAuthFrontendCallback, getPublicSiteOrigin } from '../lib/publicUrl.js';
+import {
+  getPublicSiteOrigin,
+  resolveOAuthFrontendCallback,
+  isAllowedOAuthFrontendCallback,
+  getOAuthFrontendCallback,
+} from '../lib/publicUrl.js';
 
 export const oauthRouter = Router();
 
@@ -35,7 +40,22 @@ function getRedirectUri(provider) {
   return `${getPublicSiteOrigin()}/auth/oauth/${provider}/callback`;
 }
 
-function getFrontendCallbackUrl() {
+function oauthCookieOptions(maxAgeMs = 600000) {
+  const secure = process.env.API_COOKIE_SECURE === 'true' || Boolean(process.env.VERCEL);
+  return {
+    httpOnly: true,
+    maxAge: maxAgeMs,
+    sameSite: 'lax',
+    secure,
+    path: '/',
+  };
+}
+
+function getFrontendCallbackUrl(req, provider) {
+  const fromCookie = req.cookies?.[`oauth_return_${provider}`];
+  if (fromCookie && isAllowedOAuthFrontendCallback(fromCookie)) {
+    return fromCookie;
+  }
   return getOAuthFrontendCallback();
 }
 
@@ -138,7 +158,11 @@ oauthRouter.get('/:provider', (req, res) => {
   if (!clientId) return res.status(503).json({ error: `${provider} OAuth not configured` });
 
   const state = crypto.randomBytes(16).toString('hex');
-  res.cookie(`oauth_state_${provider}`, state, { httpOnly: true, maxAge: 600000, sameSite: 'lax' });
+  const returnOrigin = req.query.return_origin?.toString().trim();
+  const frontendCallback = resolveOAuthFrontendCallback(returnOrigin);
+
+  res.cookie(`oauth_state_${provider}`, state, oauthCookieOptions());
+  res.cookie(`oauth_return_${provider}`, frontendCallback, oauthCookieOptions());
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -159,14 +183,16 @@ async function handleOAuthCallback(req, res, provider) {
   const state = req.query.state || req.body?.state;
   const cookieState = req.cookies?.[`oauth_state_${provider}`];
 
+  const callbackUrl = getFrontendCallbackUrl(req, provider);
+
   if (!code || !state || state !== cookieState) {
-    return res.redirect(`${getFrontendCallbackUrl()}?error=invalid_state`);
+    return res.redirect(`${callbackUrl}?error=invalid_state`);
   }
 
   const clientId = process.env[`OAUTH_${provider.toUpperCase()}_CLIENT_ID`];
   const clientSecret = process.env[`OAUTH_${provider.toUpperCase()}_CLIENT_SECRET`];
   if (!clientId || !clientSecret) {
-    return res.redirect(`${getFrontendCallbackUrl()}?error=not_configured`);
+    return res.redirect(`${callbackUrl}?error=not_configured`);
   }
 
   const tokenBody = new URLSearchParams({
@@ -208,7 +234,7 @@ async function handleOAuthCallback(req, res, provider) {
   }
 
   if (!providerUserId) {
-    return res.redirect(`${getFrontendCallbackUrl()}?error=no_user_id`);
+    return res.redirect(`${callbackUrl}?error=no_user_id`);
   }
 
   const profile = await findOrCreateOAuthUser({ provider, providerUserId, email, fullName });
@@ -220,7 +246,10 @@ async function handleOAuthCallback(req, res, provider) {
     res,
   });
 
-  const front = new URL(getFrontendCallbackUrl());
+  res.clearCookie(`oauth_return_${provider}`, { path: '/' });
+  res.clearCookie(`oauth_state_${provider}`, { path: '/' });
+
+  const front = new URL(callbackUrl);
   front.searchParams.set('accessToken', accessJwt);
   front.searchParams.set('provider', provider);
   res.redirect(front.toString());

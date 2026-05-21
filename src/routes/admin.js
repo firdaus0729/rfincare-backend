@@ -4,8 +4,11 @@ import { getPool } from '../db/pool.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { approvalMatrixRouter } from './approvalMatrixRules.js';
+import { statusCheckAdminRouter } from './statusCheckAdmin.js';
 
 export const adminRouter = Router();
+
+adminRouter.use('/status-check', statusCheckAdminRouter);
 
 /** Alias: /admin/approval-matrix-rules (same handlers as /approval-matrix-rules) */
 adminRouter.use('/approval-matrix-rules', approvalMatrixRouter);
