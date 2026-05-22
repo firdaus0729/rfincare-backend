@@ -43,6 +43,11 @@ export function createApp({ serveStatic = true } = {}) {
   app.use('/states', statesRouter);
   app.use('/loan-applications', loanApplicationsRouter);
   app.use('/admin', adminRouter);
+
+  // Backward-compatible /api/* aliases (older clients or proxies)
+  app.use('/api/loan-applications', loanApplicationsRouter);
+  app.use('/api/admin', adminRouter);
+  app.use('/api/auth', authRouter);
   app.use('/public', publicContentRouter);
   app.use('/cms', cmsRouter);
   app.use('/auth/oauth', oauthRouter);
