@@ -5,10 +5,23 @@ import { createReadStream } from 'node:fs';
 
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
+import { hasPermission } from '../auth/permissions.js';
 import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
 
 export const documentsRouter = Router();
+
+const STAFF_ROLES = new Set(['admin', 'super_admin', 'employee']);
+
+function formatDocumentRow(row) {
+  const fileName = basename(row.file_path);
+  const isImage = (row.mime_type || '').startsWith('image/');
+  const previewUrl = isImage && fileName ? `/uploads/${fileName}` : null;
+  return {
+    ...row,
+    preview_url: previewUrl,
+  };
+}
 
 const uploadDir = process.env.UPLOAD_DIR || './uploads';
 const storage = multer.diskStorage({
@@ -31,27 +44,37 @@ documentsRouter.get(
   async (req, res, next) => {
     try {
       const pool = getPool();
-      const customerId = req.query.customerId || req.auth.userId;
       const applicationId = req.query.applicationId || null;
+      const customerId = req.query.customerId || null;
+      const isStaff = STAFF_ROLES.has(req.auth.role) || hasPermission(req.auth.role, 'read:*');
 
-      if (customerId !== req.auth.userId && req.auth.role === 'customer') {
-        const e = new Error('Insufficient permissions');
-        e.status = 403;
-        throw e;
-      }
+      let conditions = [];
+      const params = {};
 
-      const conditions = ['customer_id = :customer_id'];
-      const params = { customer_id: customerId };
-      if (applicationId) {
+      if (applicationId && isStaff) {
         conditions.push('application_id = :application_id');
         params.application_id = applicationId;
+      } else {
+        const ownerId = customerId || req.auth.userId;
+        if (ownerId !== req.auth.userId && req.auth.role === 'customer') {
+          const e = new Error('Insufficient permissions');
+          e.status = 403;
+          throw e;
+        }
+        conditions.push('customer_id = :customer_id');
+        params.customer_id = ownerId;
+        if (applicationId) {
+          conditions.push('application_id = :application_id');
+          params.application_id = applicationId;
+        }
       }
 
+      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
       const [rows] = await pool.execute(
-        `SELECT * FROM customer_documents WHERE ${conditions.join(' AND ')} ORDER BY uploaded_at DESC`,
+        `SELECT * FROM customer_documents ${where} ORDER BY uploaded_at DESC`,
         params,
       );
-      res.json(rows);
+      res.json(rows.map(formatDocumentRow));
     } catch (err) {
       next(err);
     }
@@ -107,7 +130,7 @@ documentsRouter.post(
       );
 
       const [[doc]] = await pool.execute(`SELECT * FROM customer_documents WHERE id = :id`, { id: docId });
-      res.status(201).json(doc);
+      res.status(201).json(formatDocumentRow(doc));
     } catch (err) {
       next(err);
     }
