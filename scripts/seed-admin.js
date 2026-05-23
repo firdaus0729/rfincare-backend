@@ -32,7 +32,7 @@ async function seedAdmin() {
 
   try {
     const adminEmail = 'admin@rfincare.com';
-    const adminPass = 'Admin@123'; // Default secure password
+    const adminPass = 'Admin@2026'; // Keep in sync with seed-demo-users.js
     const adminId = randomUUID();
     const hashedPass = await bcrypt.hash(adminPass, 12);
 
@@ -52,7 +52,13 @@ async function seedAdmin() {
       );
       
       await connection.execute(
-        "UPDATE user_profiles SET role = 'super_admin', is_active = 1, account_status = 'active' WHERE id = :id",
+        `UPDATE user_profiles SET
+           role = 'super_admin',
+           is_active = 1,
+           account_status = 'active',
+           failed_login_attempts = 0,
+           locked_until = NULL
+         WHERE id = :id`,
         { id: existing[0].id }
       );
     } else {
