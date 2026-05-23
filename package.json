@@ -13,6 +13,7 @@
     "seed:admin": "node scripts/seed-admin.js",
     "seed:demo-users": "node scripts/seed-demo-users.js",
     "seed:bank-products": "node scripts/seed-bank-products.js",
+    "seed:loan-products": "node scripts/seed-loan-product-catalog.js",
     "seed:approval-matrix": "node scripts/seed-approval-matrix.js"
   },
   "dependencies": {
