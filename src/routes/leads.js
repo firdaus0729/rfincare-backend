@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { getPool } from '../db/pool.js';
+import { ensureOnboardingSchema } from '../db/ensureOnboardingSchema.js';
 import { newId } from '../lib/ids.js';
 import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
 import { createResumeToken, upsertLeadFromDraft } from '../lib/resumeTokens.js';
@@ -31,6 +32,9 @@ function formatLead(row) {
           ? JSON.parse(row.eligibility_data)
           : null,
     assignedTo: row.assigned_to,
+    assignedToName: row.assignee_name || null,
+    assignedToCode: row.assignee_code || null,
+    assignedToRole: row.assignee_role || null,
     applicationId: row.application_id,
     sessionKey: row.session_key,
     createdAt: row.created_at,
@@ -410,9 +414,19 @@ leadsRouter.get('/', authenticate, async (req, res, next) => {
       throw e;
     }
 
+    await ensureOnboardingSchema();
     const pool = getPool();
     const [rows] = await pool.execute(
-      `SELECT * FROM marketing_leads ORDER BY created_at DESC LIMIT 200`,
+      `SELECT ml.*,
+              up.full_name AS assignee_name,
+              up.role AS assignee_role,
+              COALESCE(ao.agent_code, eo.employee_code) AS assignee_code
+       FROM marketing_leads ml
+       LEFT JOIN user_profiles up ON up.id = ml.assigned_to
+       LEFT JOIN agent_onboarding ao ON ao.user_id = up.id AND up.role = 'agent'
+       LEFT JOIN employee_onboarding eo ON eo.user_id = up.id AND up.role = 'employee'
+       ORDER BY ml.created_at DESC
+       LIMIT 200`,
     );
     res.json(rows.map(formatLead));
   } catch (err) {

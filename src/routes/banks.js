@@ -3,10 +3,18 @@ import { z } from 'zod';
 
 import { getPool } from '../db/pool.js';
 import { ensureBankSchema } from '../db/ensureBankSchema.js';
+import { cacheDeletePrefix, cacheGet, cacheSet } from '../lib/simpleCache.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { newId } from '../lib/ids.js';
 import { listRulesForBank } from './approvalMatrixRules.js';
+
+const BANK_LIST_CACHE_PREFIX = 'banks:list:';
+const BANK_LIST_CACHE_TTL_MS = 120_000;
+
+function invalidateBankListCache() {
+  cacheDeletePrefix(BANK_LIST_CACHE_PREFIX);
+}
 
 export const banksRouter = Router();
 
@@ -121,49 +129,99 @@ function formatBankRow(row) {
   };
 }
 
+const BANK_LIST_COLUMNS = `
+  id, name, logo_url, logo_alt, bank_type, status, rating, reviews_count,
+  customers_served, partnership_duration, certifications, display_priority
+`;
+
+function slimProductData(rawData) {
+  const d = parseProductData(rawData);
+  return {
+    loan_type: d.loan_type || d.loanType || d.type || d.productType || null,
+    interest_rate_min: d.interest_rate_min ?? d.interestRateMin ?? null,
+    interest_rate_max: d.interest_rate_max ?? d.interestRateMax ?? null,
+    processing_fee_percentage: d.processing_fee_percentage ?? d.processingFeePercentage ?? null,
+    processing_fee_fixed: d.processing_fee_fixed ?? d.processingFeeFixed ?? null,
+    other_charges: d.other_charges ?? d.otherCharges ?? d.other_fees ?? d.otherFees ?? null,
+    max_loan_amount: d.max_loan_amount ?? d.maxLoanAmount ?? null,
+    max_tenure_years: d.max_tenure_years ?? d.maxTenureYears ?? null,
+    features: d.features ?? null,
+  };
+}
+
+function slimProductForList(product) {
+  const loanType = resolveProductLoanType(product);
+  return {
+    id: product.id,
+    bank_id: product.bank_id,
+    name: product.name,
+    is_active: product.is_active,
+    loan_type: loanType,
+    data: slimProductData(product.data),
+  };
+}
+
+async function fetchBankList({ includeInactive, includeProducts, loanTypeFilter }) {
+  const cacheKey = `${BANK_LIST_CACHE_PREFIX}${includeInactive}:${includeProducts}:${loanTypeFilter || 'all'}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const pool = getPool();
+  const [rows] = await pool.execute(
+    `SELECT ${BANK_LIST_COLUMNS}
+     FROM banks
+     ${includeInactive ? '' : "WHERE status = 'active'"}
+     ORDER BY display_priority DESC, name ASC`,
+  );
+
+  if (!includeProducts) {
+    const result = rows.map(formatBankRow);
+    cacheSet(cacheKey, result, BANK_LIST_CACHE_TTL_MS);
+    return result;
+  }
+
+  const [products] = await pool.execute(
+    `SELECT id, bank_id, name, is_active, data
+     FROM bank_products
+     WHERE is_active = 1`,
+  );
+
+  const productsByBank = new Map();
+  for (const product of products) {
+    const slim = slimProductForList(product);
+    if (!productsByBank.has(product.bank_id)) {
+      productsByBank.set(product.bank_id, { all: [], matched: [] });
+    }
+    const entry = productsByBank.get(product.bank_id);
+    entry.all.push(slim);
+    if (!loanTypeFilter || slim.loan_type === loanTypeFilter) {
+      entry.matched.push(slim);
+    }
+  }
+
+  const result = rows.map((bank) => {
+    const entry = productsByBank.get(bank.id) || { all: [], matched: [] };
+    const bankProducts =
+      loanTypeFilter && entry.matched.length > 0 ? entry.matched : entry.all;
+    return {
+      ...formatBankRow(bank),
+      bank_products: bankProducts,
+    };
+  });
+
+  cacheSet(cacheKey, result, BANK_LIST_CACHE_TTL_MS);
+  return result;
+}
+
 banksRouter.get('/', async (req, res, next) => {
   try {
-    await ensureBankSchema();
     const includeInactive = req.query.includeInactive === 'true';
     const includeProducts = req.query.includeProducts !== 'false';
     const loanTypeFilter = normalizeLoanTypeQuery(req.query.loanType);
-    const pool = getPool();
-    const [rows] = await pool.execute(
-      `SELECT * FROM banks ${includeInactive ? '' : "WHERE status = 'active'"} ORDER BY display_priority DESC`,
-    );
 
-    if (!includeProducts) {
-      return res.json(rows);
-    }
+    const result = await fetchBankList({ includeInactive, includeProducts, loanTypeFilter });
 
-    const [products] = await pool.execute(
-      `SELECT id, bank_id, name, is_active, data FROM bank_products WHERE is_active = 1`,
-    );
-
-    const productsByBank = new Map();
-    for (const product of products) {
-      const loanType = resolveProductLoanType(product);
-      const enriched = { ...product, loan_type: loanType };
-      if (!productsByBank.has(product.bank_id)) {
-        productsByBank.set(product.bank_id, { all: [], matched: [] });
-      }
-      const entry = productsByBank.get(product.bank_id);
-      entry.all.push(enriched);
-      if (!loanTypeFilter || loanType === loanTypeFilter) {
-        entry.matched.push(enriched);
-      }
-    }
-
-    const result = rows.map((bank) => {
-      const entry = productsByBank.get(bank.id) || { all: [], matched: [] };
-      const bankProducts =
-        loanTypeFilter && entry.matched.length > 0 ? entry.matched : entry.all;
-      return {
-        ...formatBankRow(bank),
-        bank_products: bankProducts,
-      };
-    });
-
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
     res.json(result);
   } catch (err) {
     next(err);
@@ -228,6 +286,7 @@ banksRouter.post(
         `SELECT ${BANK_COLUMNS} FROM banks WHERE id = :id`,
         { id },
       );
+      invalidateBankListCache();
       res.status(201).json(formatBankRow(row));
     } catch (err) {
       next(err);
@@ -279,6 +338,7 @@ banksRouter.patch(
         `SELECT ${BANK_COLUMNS} FROM banks WHERE id = :id`,
         { id: req.params.id },
       );
+      invalidateBankListCache();
       res.json(formatBankRow(row));
     } catch (err) {
       next(err);
@@ -294,6 +354,7 @@ banksRouter.delete(
     try {
       const pool = getPool();
       await pool.execute(`DELETE FROM banks WHERE id = :id`, { id: req.params.id });
+      invalidateBankListCache();
       res.json({ ok: true });
     } catch (err) {
       next(err);
@@ -343,6 +404,7 @@ banksRouter.post(
         { id, bankId: req.params.id, name, data: JSON.stringify(productData) },
       );
       const [[row]] = await pool.execute(`SELECT * FROM bank_products WHERE id = :id`, { id });
+      invalidateBankListCache();
       res.status(201).json(row);
     } catch (err) {
       next(err);

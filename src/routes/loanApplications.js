@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { unlink } from 'node:fs/promises';
 
 import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
+import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { hasPermission } from '../auth/permissions.js';
@@ -11,6 +13,58 @@ import { createCustomerNotification } from './notifications.js';
 export const loanApplicationsRouter = Router();
 
 const STAFF_ROLES = new Set(['admin', 'super_admin', 'employee']);
+const ADMIN_DELETE_ROLES = new Set(['admin', 'super_admin']);
+const ADMIN_DELETE_OTP_PURPOSE = 'admin_delete_apps';
+
+function canDeleteApplications(role) {
+  return ADMIN_DELETE_ROLES.has(role) || hasPermission(role, 'delete:loan_applications');
+}
+
+async function hardDeleteApplications(pool, applicationIds) {
+  if (!applicationIds.length) return { deleted: 0 };
+
+  const params = {};
+  const placeholders = applicationIds.map((id, i) => {
+    const key = `id${i}`;
+    params[key] = id;
+    return `:${key}`;
+  });
+  const inClause = placeholders.join(', ');
+
+  const [docs] = await pool.execute(
+    `SELECT id, file_path FROM customer_documents WHERE application_id IN (${inClause})`,
+    params,
+  );
+
+  for (const doc of docs) {
+    if (doc.file_path) {
+      try {
+        await unlink(doc.file_path);
+      } catch {
+        /* file may already be gone */
+      }
+    }
+  }
+
+  await pool.execute(`DELETE FROM customer_documents WHERE application_id IN (${inClause})`, params);
+  await pool.execute(`DELETE FROM application_consents WHERE application_id IN (${inClause})`, params);
+  await pool.execute(`DELETE FROM otp_verifications WHERE application_id IN (${inClause})`, params);
+  await pool.execute(
+    `UPDATE marketing_leads SET application_id = NULL WHERE application_id IN (${inClause})`,
+    params,
+  );
+  await pool.execute(
+    `UPDATE application_form_drafts SET application_id = NULL WHERE application_id IN (${inClause})`,
+    params,
+  );
+
+  const [result] = await pool.execute(
+    `DELETE FROM loan_applications WHERE id IN (${inClause})`,
+    params,
+  );
+
+  return { deleted: result.affectedRows ?? applicationIds.length };
+}
 
 function parseJson(value) {
   if (!value) return {};
@@ -223,6 +277,125 @@ loanApplicationsRouter.get(
       }
 
       res.json(apps);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+loanApplicationsRouter.post(
+  '/bulk-delete/request-otp',
+  authenticate,
+  authorize({ resource: 'loan_applications', action: 'delete' }),
+  async (req, res, next) => {
+    try {
+      if (!canDeleteApplications(req.auth.role)) {
+        const e = new Error('Insufficient permissions');
+        e.status = 403;
+        throw e;
+      }
+
+      const pool = getPool();
+      const [[profile]] = await pool.execute(
+        `SELECT email, full_name FROM user_profiles WHERE id = :id LIMIT 1`,
+        { id: req.auth.userId },
+      );
+      if (!profile?.email) {
+        return res.status(400).json({ error: 'Admin email not found on your profile' });
+      }
+
+      const otp = generateOtp();
+      const otpId = newId();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+      await pool.execute(
+        `INSERT INTO lead_otps (id, lead_id, email, phone, otp_hash, purpose, channel, expires_at)
+         VALUES (:id, NULL, :email, NULL, :hash, :purpose, 'email', :exp)`,
+        {
+          id: otpId,
+          email: profile.email,
+          hash: hashOtp(otp),
+          purpose: ADMIN_DELETE_OTP_PURPOSE,
+          exp: expiresAt,
+        },
+      );
+
+      await sendOtpNotification({
+        email: profile.email,
+        otp,
+        channel: 'email',
+      });
+
+      res.json({
+        success: true,
+        email: profile.email,
+        otpId,
+        expiresInSeconds: 600,
+        message: `OTP sent to ${profile.email}`,
+        ...(process.env.LOG_OTP === 'true' ? { devOtp: otp } : {}),
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const BulkDeleteConfirmSchema = z.object({
+  applicationIds: z.array(z.string().min(1)).min(1).max(100),
+  otp: z.string().length(6),
+});
+
+loanApplicationsRouter.post(
+  '/bulk-delete/confirm',
+  authenticate,
+  authorize({ resource: 'loan_applications', action: 'delete' }),
+  async (req, res, next) => {
+    try {
+      if (!canDeleteApplications(req.auth.role)) {
+        const e = new Error('Insufficient permissions');
+        e.status = 403;
+        throw e;
+      }
+
+      const input = BulkDeleteConfirmSchema.parse(req.body);
+      const pool = getPool();
+
+      const [[profile]] = await pool.execute(
+        `SELECT email FROM user_profiles WHERE id = :id LIMIT 1`,
+        { id: req.auth.userId },
+      );
+      if (!profile?.email) {
+        return res.status(400).json({ error: 'Admin email not found' });
+      }
+
+      const [[otpRow]] = await pool.execute(
+        `SELECT id FROM lead_otps
+         WHERE email = :email AND otp_hash = :hash AND purpose = :purpose
+           AND verified_at IS NULL AND expires_at > NOW(3)
+         ORDER BY created_at DESC LIMIT 1`,
+        {
+          email: profile.email,
+          hash: hashOtp(input.otp),
+          purpose: ADMIN_DELETE_OTP_PURPOSE,
+        },
+      );
+
+      if (!otpRow) {
+        return res.status(401).json({ error: 'Invalid or expired OTP' });
+      }
+
+      await pool.execute(`UPDATE lead_otps SET verified_at = NOW(3) WHERE id = :id`, {
+        id: otpRow.id,
+      });
+
+      const uniqueIds = [...new Set(input.applicationIds)];
+      const { deleted } = await hardDeleteApplications(pool, uniqueIds);
+
+      res.json({
+        success: true,
+        deleted,
+        message: `${deleted} application(s) permanently deleted`,
+      });
     } catch (err) {
       next(err);
     }

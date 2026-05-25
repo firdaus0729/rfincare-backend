@@ -7,6 +7,7 @@ import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
 import { calculateEligibility } from '../lib/eligibilityEngine.js';
 import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
+import { getSiteContactSettings } from '../lib/siteContactSettings.js';
 import { createResumeToken, resolveResumeToken } from '../lib/resumeTokens.js';
 import { resolveFrontendEnvPath } from '../lib/envPaths.js';
 import { entriesToObject, readEnvFile } from '../lib/envFile.js';
@@ -30,6 +31,14 @@ const storyPhotoUpload = multer({
     const ok = ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype);
     cb(ok ? null : new Error('Photo must be JPG, PNG, or WebP'), ok);
   },
+});
+
+publicContentRouter.get('/site-contact', async (_req, res, next) => {
+  try {
+    res.json(await getSiteContactSettings());
+  } catch (err) {
+    next(err);
+  }
 });
 
 publicContentRouter.get('/runtime-config', async (_req, res, next) => {

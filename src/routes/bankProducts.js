@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { getPool } from '../db/pool.js';
+import { cacheDeletePrefix } from '../lib/simpleCache.js';
+
+const BANK_LIST_CACHE_PREFIX = 'banks:list:';
 
 export const bankProductsRouter = Router();
 
@@ -103,6 +106,7 @@ bankProductsRouter.patch(
       const [[row]] = await pool.execute(`SELECT * FROM bank_products WHERE id = :id`, {
         id: req.params.id,
       });
+      cacheDeletePrefix(BANK_LIST_CACHE_PREFIX);
       res.json(row);
     } catch (err) {
       next(err);
@@ -118,6 +122,7 @@ bankProductsRouter.delete(
     try {
       const pool = getPool();
       await pool.execute(`DELETE FROM bank_products WHERE id = :id`, { id: req.params.id });
+      cacheDeletePrefix(BANK_LIST_CACHE_PREFIX);
       res.json({ ok: true });
     } catch (err) {
       next(err);

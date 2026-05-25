@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
+import { getSiteContactSettings, updateSiteContactSettings } from '../lib/siteContactSettings.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { requireRoles } from '../middleware/requireRoles.js';
 
@@ -32,6 +33,48 @@ const VideoSchema = z.object({
   durationLabel: z.string().optional(),
   isPublished: z.boolean().optional(),
   sortOrder: z.number().optional(),
+});
+
+const SiteContactSchema = z.object({
+  tagline: z.string().optional(),
+  email: z.string().email(),
+  phone: z.string().min(6),
+  emails: z.array(z.string().email()).optional(),
+  phones: z.array(z.string().min(6)).optional(),
+  registeredOfficeLabel: z.string().optional(),
+  registeredAddress: z.string().min(1),
+  branchOfficeLabel: z.string().optional(),
+  branchAddress: z.string().min(1),
+  offices: z
+    .array(
+      z.object({
+        title: z.string().min(1),
+        address: z.string().min(1),
+      }),
+    )
+    .optional(),
+  socialFacebook: z.string().optional(),
+  socialTwitter: z.string().optional(),
+  socialLinkedin: z.string().optional(),
+  socialInstagram: z.string().optional(),
+});
+
+cmsRouter.get('/site-contact', async (req, res, next) => {
+  try {
+    res.json(await getSiteContactSettings());
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.put('/site-contact', async (req, res, next) => {
+  try {
+    const input = SiteContactSchema.parse(req.body);
+    const updated = await updateSiteContactSettings(input, req.auth.userId);
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
 });
 
 cmsRouter.get('/news', async (req, res, next) => {
