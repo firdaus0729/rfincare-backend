@@ -10,6 +10,7 @@ import { hasPermission } from '../auth/permissions.js';
 import { getPool } from '../db/pool.js';
 import { ensureDocumentSchema } from '../db/ensureDocumentSchema.js';
 import { newId } from '../lib/ids.js';
+import { writeAuditLog } from '../lib/audit.js';
 
 export const documentsRouter = Router();
 
@@ -317,7 +318,7 @@ documentsRouter.patch(
       const pool = getPool();
 
       const [[existing]] = await pool.execute(
-        `SELECT id FROM customer_documents WHERE id = :id LIMIT 1`,
+        `SELECT * FROM customer_documents WHERE id = :id LIMIT 1`,
         { id: req.params.id },
       );
       if (!existing) return res.status(404).json({ error: 'Document not found' });
@@ -341,6 +342,23 @@ documentsRouter.patch(
       const [[row]] = await pool.execute(`SELECT * FROM customer_documents WHERE id = :id`, {
         id: req.params.id,
       });
+
+      await writeAuditLog({
+        userId: req.auth.userId,
+        actionType: 'VERIFY',
+        tableName: 'customer_documents',
+        recordId: req.params.id,
+        oldValues: {
+          verification_status: existing.verification_status,
+          status: existing.status,
+        },
+        newValues: {
+          verification_status: input.status,
+          verification_notes: notes,
+          verified_at: new Date().toISOString(),
+        },
+      });
+
       res.json(formatDocumentRow(row));
     } catch (err) {
       next(err);

@@ -3,6 +3,11 @@ import { Router } from 'express';
 import { getPool } from '../db/pool.js';
 import { ensureOnboardingSchema } from '../db/ensureOnboardingSchema.js';
 import { createAgentAccount, createEmployeeAccount } from '../lib/staffOnboarding.js';
+import { ensureMilestone3Schema } from '../db/ensureMilestone3Schema.js';
+import { assignUniqueCustomerCode } from '../lib/customerCode.js';
+import { writeAuditLog } from '../lib/audit.js';
+import { newId } from '../lib/ids.js';
+import { ensureStaffExtrasSchema } from '../db/ensureStaffExtrasSchema.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { approvalMatrixRouter } from './approvalMatrixRules.js';
@@ -49,6 +54,7 @@ function mapEmployeeProfile(row) {
     employee_name: row.full_name,
     employee_code: employeeCode,
     username: row.username || null,
+    onboarding_status: row.eo_status || row.onboarding_status || row.account_status || 'pending',
     created_at: row.created_at,
     user_profile: {
       role: row.role,
@@ -336,6 +342,279 @@ adminRouter.patch(
       }
 
       res.json(mapEmployeeProfile(row));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+function mapCustomerRow(row) {
+  return {
+    id: row.id,
+    customerCode: row.customer_code,
+    fullName: row.full_name,
+    email: row.email,
+    phone: row.phone,
+    accountStatus: row.account_status,
+    isActive: Boolean(row.is_active),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    applicationCount: Number(row.application_count || 0),
+  };
+}
+
+adminRouter.get(
+  '/customers',
+  authenticate,
+  authorize({ resource: 'customers', action: 'read' }),
+  async (req, res, next) => {
+    try {
+      await ensureMilestone3Schema();
+      const pool = getPool();
+      const search = req.query.search?.trim();
+      let sql = `
+        SELECT up.*,
+               (SELECT COUNT(*) FROM loan_applications la WHERE la.customer_id = up.id) AS application_count
+        FROM user_profiles up
+        WHERE up.role = 'customer'`;
+      const params = {};
+      if (search) {
+        sql += ` AND (
+          up.full_name LIKE :search OR up.email LIKE :search
+          OR up.phone LIKE :search OR up.customer_code LIKE :search
+        )`;
+        params.search = `%${search}%`;
+      }
+      sql += ' ORDER BY up.created_at DESC LIMIT 500';
+      const [rows] = await pool.execute(sql, params);
+      for (const row of rows) {
+        if (!row.customer_code) {
+          await assignUniqueCustomerCode(pool, row.id);
+        }
+      }
+      const [updated] = await pool.execute(sql, params);
+      res.json(updated.map(mapCustomerRow));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+adminRouter.patch(
+  '/customers/:id',
+  authenticate,
+  authorize({ resource: 'customers', action: 'update' }),
+  async (req, res, next) => {
+    try {
+      await ensureMilestone3Schema();
+      const pool = getPool();
+      const { is_active, account_status } = req.body;
+      const isActive = is_active !== undefined ? (is_active ? 1 : 0) : undefined;
+
+      const [[before]] = await pool.execute(
+        `SELECT * FROM user_profiles WHERE id = :id AND role = 'customer' LIMIT 1`,
+        { id: req.params.id },
+      );
+      if (!before) {
+        const e = new Error('Customer not found');
+        e.status = 404;
+        throw e;
+      }
+
+      if (!before.customer_code) {
+        await assignUniqueCustomerCode(pool, req.params.id);
+      }
+
+      await pool.execute(
+        `UPDATE user_profiles
+         SET is_active = COALESCE(:is_active, is_active),
+             account_status = COALESCE(:account_status, account_status)
+         WHERE id = :id AND role = 'customer'`,
+        {
+          id: req.params.id,
+          is_active: isActive,
+          account_status: account_status || null,
+        },
+      );
+
+      const [[row]] = await pool.execute(
+        `SELECT up.*,
+                (SELECT COUNT(*) FROM loan_applications la WHERE la.customer_id = up.id) AS application_count
+         FROM user_profiles up WHERE up.id = :id LIMIT 1`,
+        { id: req.params.id },
+      );
+
+      await writeAuditLog({
+        userId: req.auth.userId,
+        actionType: 'UPDATE',
+        tableName: 'user_profiles',
+        recordId: req.params.id,
+        oldValues: {
+          is_active: before.is_active,
+          account_status: before.account_status,
+        },
+        newValues: { is_active: row.is_active, account_status: row.account_status },
+      });
+
+      res.json(mapCustomerRow(row));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+adminRouter.get(
+  '/agents/:id/commission',
+  authenticate,
+  authorize({ resource: 'agents', action: 'read' }),
+  async (req, res, next) => {
+    try {
+      await ensureStaffExtrasSchema();
+      const pool = getPool();
+      const [rows] = await pool.execute(
+        `SELECT * FROM agent_commission_config WHERE agent_user_id = :id ORDER BY updated_at DESC`,
+        { id: req.params.id },
+      );
+      res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+adminRouter.put(
+  '/agents/:id/commission',
+  authenticate,
+  authorize({ resource: 'agents', action: 'update' }),
+  async (req, res, next) => {
+    try {
+      await ensureStaffExtrasSchema();
+      const pool = getPool();
+      const body = req.body || {};
+      const id = newId();
+
+      await pool.execute(`DELETE FROM agent_commission_config WHERE agent_user_id = :agentId`, {
+        agentId: req.params.id,
+      });
+
+      await pool.execute(
+        `INSERT INTO agent_commission_config (
+           id, agent_user_id, loan_type, commission_type, commission_value,
+           min_loan_amount, max_loan_amount, effective_from, effective_to, updated_by
+         ) VALUES (
+           :id, :agent_user_id, :loan_type, :commission_type, :commission_value,
+           :min_loan_amount, :max_loan_amount, :effective_from, :effective_to, :updated_by
+         )`,
+        {
+          id,
+          agent_user_id: req.params.id,
+          loan_type: body.loanType || body.loan_type || null,
+          commission_type: body.commissionType || body.commission_type || 'percentage',
+          commission_value: body.commissionValue ?? body.commission_value ?? 2.5,
+          min_loan_amount: body.minLoanAmount ?? body.min_loan_amount ?? null,
+          max_loan_amount: body.maxLoanAmount ?? body.max_loan_amount ?? null,
+          effective_from: body.effectiveFrom || body.effective_from || null,
+          effective_to: body.effectiveTo || body.effective_to || null,
+          updated_by: req.auth.userId,
+        },
+      );
+
+      await writeAuditLog({
+        userId: req.auth.userId,
+        actionType: 'UPDATE',
+        tableName: 'agent_commission_config',
+        recordId: req.params.id,
+        newValues: body,
+      });
+
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+adminRouter.get(
+  '/employees/:id/access-controls',
+  authenticate,
+  authorize({ resource: 'employees', action: 'read' }),
+  async (req, res, next) => {
+    try {
+      await ensureStaffExtrasSchema();
+      const pool = getPool();
+      const [rows] = await pool.execute(
+        `SELECT * FROM employee_access_controls WHERE employee_user_id = :id`,
+        { id: req.params.id },
+      );
+      res.json(
+        rows.map((r) => {
+          let permissions = r.permissions_json;
+          if (typeof permissions === 'string') {
+            try {
+              permissions = JSON.parse(permissions);
+            } catch {
+              permissions = [];
+            }
+          }
+          return {
+            moduleName: r.module_name,
+            permissions: permissions || [],
+            isActive: Boolean(r.is_active),
+            expiresAt: r.expires_at,
+          };
+        }),
+      );
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+adminRouter.put(
+  '/employees/:id/access-controls',
+  authenticate,
+  authorize({ resource: 'employees', action: 'update' }),
+  async (req, res, next) => {
+    try {
+      await ensureStaffExtrasSchema();
+      const pool = getPool();
+      const input = req.body || {};
+      const moduleName = input.moduleName || input.module_name || 'applications';
+      const permissions = input.permissions || [];
+      const isActive = input.isActive !== false && input.is_active !== false;
+      const expiresAt = input.expiresAt || input.expires_at || null;
+
+      await pool.execute(
+        `INSERT INTO employee_access_controls (
+           id, employee_user_id, module_name, permissions_json, is_active, expires_at, updated_by
+         ) VALUES (
+           :id, :employee_user_id, :module_name, :permissions_json, :is_active, :expires_at, :updated_by
+         )
+         ON DUPLICATE KEY UPDATE
+           permissions_json = VALUES(permissions_json),
+           is_active = VALUES(is_active),
+           expires_at = VALUES(expires_at),
+           updated_by = VALUES(updated_by)`,
+        {
+          id: newId(),
+          employee_user_id: req.params.id,
+          module_name: moduleName,
+          permissions_json: JSON.stringify(permissions),
+          is_active: isActive ? 1 : 0,
+          expires_at: expiresAt,
+          updated_by: req.auth.userId,
+        },
+      );
+
+      await writeAuditLog({
+        userId: req.auth.userId,
+        actionType: 'UPDATE',
+        tableName: 'employee_access_controls',
+        recordId: req.params.id,
+        newValues: { moduleName, permissions },
+      });
+
+      res.json({ ok: true });
     } catch (err) {
       next(err);
     }

@@ -5,6 +5,8 @@ import crypto from 'node:crypto';
 
 import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
+import { assignUniqueCustomerCode } from '../lib/customerCode.js';
+import { ensureMilestone3Schema } from '../db/ensureMilestone3Schema.js';
 import { sha256Hex } from '../lib/crypto.js';
 import { signAccessToken, signRefreshToken } from '../lib/jwt.js';
 import {
@@ -134,11 +136,13 @@ async function findOrCreateOAuthUser({ provider, providerUserId, email, fullName
     `INSERT INTO auth_users (id, email, password_hash) VALUES (:id, :email, :ph)`,
     { id: userId, email: userEmail, ph: placeholderHash },
   );
+  await ensureMilestone3Schema();
   await pool.execute(
     `INSERT INTO user_profiles (id, email, full_name, role, account_status, is_active)
      VALUES (:id, :email, :name, 'customer', 'active', 1)`,
     { id: userId, email: userEmail, name: fullName ?? null },
   );
+  await assignUniqueCustomerCode(pool, userId);
   await pool.execute(
     `INSERT INTO oauth_identities (id, user_id, provider, provider_user_id, email)
      VALUES (:id, :uid, :p, :pid, :email)`,

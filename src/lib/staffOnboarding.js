@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { getPool } from '../db/pool.js';
 import { ensureOnboardingSchema } from '../db/ensureOnboardingSchema.js';
 import { newId } from './ids.js';
+import { sendStaffWelcomeEmail } from './email.js';
 
 const baseStaffFields = {
   username: z.string().min(3).max(128),
@@ -111,6 +112,14 @@ export async function createAgentAccount(input, createdByUserId) {
       { id: userId },
     );
 
+    await sendStaffWelcomeEmail({
+      email: data.email,
+      fullName: data.agentName,
+      role: 'agent',
+      password: data.password,
+      loginPath: '/agent-login',
+    }).catch((err) => console.warn('[staff-email]', err.message));
+
     return row;
   } catch (err) {
     await conn.rollback();
@@ -188,6 +197,14 @@ export async function createEmployeeAccount(input, createdByUserId) {
        WHERE up.id = :id LIMIT 1`,
       { id: userId },
     );
+
+    await sendStaffWelcomeEmail({
+      email: data.email,
+      fullName: data.employeeName,
+      role: 'employee',
+      password: data.password,
+      loginPath: '/employee-login',
+    }).catch((err) => console.warn('[staff-email]', err.message));
 
     return row;
   } catch (err) {

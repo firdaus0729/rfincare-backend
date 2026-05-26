@@ -11,6 +11,9 @@ import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { getSessionCookieOptions } from '../lib/cookieOptions.js';
 import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
+import { assignUniqueCustomerCode } from '../lib/customerCode.js';
+import { ensureMilestone3Schema } from '../db/ensureMilestone3Schema.js';
+import { writeAuditLog } from '../lib/audit.js';
 
 export const authRouter = Router();
 
@@ -88,6 +91,7 @@ authRouter.post('/signup', async (req, res, next) => {
       { id: userId, email: input.email, ph: passwordHash },
     );
 
+    await ensureMilestone3Schema();
     await pool.execute(
       `INSERT INTO user_profiles (id, email, full_name, phone, role, account_status, is_active)
        VALUES (:id, :email, :fullName, :phone, :role, 'active', 1)`,
@@ -99,6 +103,10 @@ authRouter.post('/signup', async (req, res, next) => {
         role,
       },
     );
+
+    if (role === 'customer') {
+      await assignUniqueCustomerCode(pool, userId);
+    }
 
     const { accessJwt, refreshJwt } = await issueTokens({ userId, email: input.email, role, req });
     setRefreshCookie(res, refreshJwt);
@@ -430,21 +438,31 @@ authRouter.post('/registrations/:id/approve', authenticate, authorize({ resource
       { id: userId, email: reg.email, ph: passwordHash }
     );
 
+    await ensureMilestone3Schema();
     await pool.execute(
-      `INSERT INTO user_profiles (id, email, full_name, phone, role)
-       VALUES (:id, :email, :fullName, :phone, 'customer')`,
-      { id: userId, email: reg.email, fullName: reg.full_name, phone: reg.phone }
+      `INSERT INTO user_profiles (id, email, full_name, phone, role, account_status, is_active)
+       VALUES (:id, :email, :fullName, :phone, 'customer', 'active', 1)`,
+      { id: userId, email: reg.email, fullName: reg.full_name, phone: reg.phone },
     );
 
-    // Update registration status
+    const customerCode = await assignUniqueCustomerCode(pool, userId);
+
     await pool.execute(
       `UPDATE customer_registrations 
        SET registration_status = 'approved', reviewed_by = :reviewerId, approved_at = NOW()
        WHERE id = :id`,
-      { id, reviewerId: req.auth.userId }
+      { id, reviewerId: req.auth.userId },
     );
 
-    res.json({ success: true, userId });
+    await writeAuditLog({
+      userId: req.auth.userId,
+      actionType: 'APPROVE',
+      tableName: 'user_profiles',
+      recordId: userId,
+      newValues: { customerCode, email: reg.email },
+    });
+
+    res.json({ success: true, userId, customerCode });
   } catch (err) {
     next(err);
   }

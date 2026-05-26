@@ -9,6 +9,7 @@ import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { hasPermission } from '../auth/permissions.js';
 import { createCustomerNotification } from './notifications.js';
+import { writeAuditLog } from '../lib/audit.js';
 
 export const loanApplicationsRouter = Router();
 
@@ -277,6 +278,69 @@ loanApplicationsRouter.get(
       }
 
       res.json(apps);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const BulkStatusSchema = z.object({
+  applicationIds: z.array(z.string().min(1)).min(1),
+  status: z.enum(['approved', 'rejected']),
+  review_notes: z.string().optional(),
+  rejection_reason: z.string().optional(),
+});
+
+loanApplicationsRouter.post(
+  '/bulk-status',
+  authenticate,
+  authorize({ resource: 'loan_applications', action: 'update' }),
+  async (req, res, next) => {
+    try {
+      if (!STAFF_ROLES.has(req.auth.role) && !hasPermission(req.auth.role, 'update:*')) {
+        const e = new Error('Insufficient permissions');
+        e.status = 403;
+        throw e;
+      }
+
+      const input = BulkStatusSchema.parse(req.body);
+      const pool = getPool();
+      let updated = 0;
+
+      for (const id of input.applicationIds) {
+        const existing = await fetchApplicationById(pool, id);
+        if (!existing) continue;
+
+        await pool.execute(
+          `UPDATE loan_applications SET
+             status = :status,
+             review_notes = COALESCE(:review_notes, review_notes),
+             rejection_reason = COALESCE(:rejection_reason, rejection_reason),
+             reviewed_by = :reviewed_by,
+             reviewed_at = NOW(3)
+           WHERE id = :id`,
+          {
+            id,
+            status: input.status,
+            review_notes: input.review_notes || null,
+            rejection_reason: input.rejection_reason || null,
+            reviewed_by: req.auth.userId,
+          },
+        );
+
+        await writeAuditLog({
+          userId: req.auth.userId,
+          actionType: input.status === 'approved' ? 'APPROVE' : 'REJECT',
+          tableName: 'loan_applications',
+          recordId: id,
+          oldValues: { status: existing.status },
+          newValues: { status: input.status },
+        });
+
+        updated += 1;
+      }
+
+      res.json({ updated, status: input.status });
     } catch (err) {
       next(err);
     }

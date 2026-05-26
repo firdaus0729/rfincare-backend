@@ -24,6 +24,9 @@ import { notificationsRouter } from './routes/notifications.js';
 import { leadsRouter } from './routes/leads.js';
 import { eligibilityAssessmentsRouter } from './routes/eligibilityAssessments.js';
 import { loanProductCatalogRouter } from './routes/loanProductCatalog.js';
+import { interestMatrixRouter } from './routes/interestMatrix.js';
+import { reportsRouter } from './routes/reports.js';
+import { portalDashboardsRouter } from './routes/portalDashboards.js';
 import { getCorsOptions } from './lib/corsOptions.js';
 
 export function createApp({ serveStatic = true } = {}) {
@@ -60,6 +63,11 @@ export function createApp({ serveStatic = true } = {}) {
   app.use('/eligibility-assessments', eligibilityAssessmentsRouter);
   app.use('/loan-products', loanProductCatalogRouter);
   app.use('/api/loan-products', loanProductCatalogRouter);
+  app.use('/interest-matrix', interestMatrixRouter);
+  app.use('/admin/interest-matrix', interestMatrixRouter);
+  app.use('/reports', reportsRouter);
+  app.use('/admin/reports', reportsRouter);
+  app.use('/portal', portalDashboardsRouter);
 
   const uploadDir = process.env.UPLOAD_DIR
     ? path.resolve(process.env.UPLOAD_DIR)
