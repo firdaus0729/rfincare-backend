@@ -214,7 +214,12 @@ oauthRouter.get('/:provider', async (req, res, next) => {
 
     const providerCfg = await getOAuthProviderConfig(provider);
     if (!providerCfg?.enabled) {
-      return res.status(503).json({ error: `${provider} OAuth is disabled in admin settings` });
+      const returnOrigin = req.query.return_origin?.toString().trim();
+      const frontendCallback = await resolveOAuthFrontendCallbackAsync(returnOrigin);
+      const front = new URL(frontendCallback);
+      front.searchParams.set('error', 'provider_disabled');
+      front.searchParams.set('provider', provider);
+      return res.redirect(front.toString());
     }
 
     const credentials = await getOAuthCredentials(provider);
