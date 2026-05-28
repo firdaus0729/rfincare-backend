@@ -90,10 +90,10 @@ documentsRouter.get(
       let searchClause = '';
       if (search) {
         searchClause = `AND (
-          la.application_number LIKE :search
-          OR up.full_name LIKE :search
-          OR up.email LIKE :search
-          OR up.phone LIKE :search
+          la.application_number COLLATE utf8mb4_unicode_ci LIKE CONVERT(:search USING utf8mb4) COLLATE utf8mb4_unicode_ci
+          OR up.full_name COLLATE utf8mb4_unicode_ci LIKE CONVERT(:search USING utf8mb4) COLLATE utf8mb4_unicode_ci
+          OR up.email COLLATE utf8mb4_unicode_ci LIKE CONVERT(:search USING utf8mb4) COLLATE utf8mb4_unicode_ci
+          OR up.phone COLLATE utf8mb4_unicode_ci LIKE CONVERT(:search USING utf8mb4) COLLATE utf8mb4_unicode_ci
         )`;
         params.search = `%${search}%`;
       }

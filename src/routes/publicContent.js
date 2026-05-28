@@ -8,6 +8,9 @@ import { newId } from '../lib/ids.js';
 import { calculateEligibility } from '../lib/eligibilityEngine.js';
 import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
 import { getSiteContactSettings } from '../lib/siteContactSettings.js';
+import { getHomepageTrustContent } from '../lib/homepageTrustContent.js';
+import { getAboutPageContent } from '../lib/aboutPageContent.js';
+import { getPublicOAuthConfig } from '../lib/oauthProviderSettings.js';
 import { createResumeToken, resolveResumeToken } from '../lib/resumeTokens.js';
 import { resolveFrontendEnvPath } from '../lib/envPaths.js';
 import { entriesToObject, readEnvFile } from '../lib/envFile.js';
@@ -78,6 +81,30 @@ publicContentRouter.get('/homepage/videos', async (req, res, next) => {
        FROM homepage_videos WHERE is_published = 1 ORDER BY sort_order DESC LIMIT 12`,
     );
     res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+publicContentRouter.get('/homepage/trust-signals', async (_req, res, next) => {
+  try {
+    res.json(await getHomepageTrustContent());
+  } catch (err) {
+    next(err);
+  }
+});
+
+publicContentRouter.get('/oauth-config', async (_req, res, next) => {
+  try {
+    res.json(await getPublicOAuthConfig());
+  } catch (err) {
+    next(err);
+  }
+});
+
+publicContentRouter.get('/about-content', async (_req, res, next) => {
+  try {
+    res.json(await getAboutPageContent());
   } catch (err) {
     next(err);
   }

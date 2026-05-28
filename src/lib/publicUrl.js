@@ -1,11 +1,28 @@
 /**
  * Public / frontend URL helpers.
  *
- * OAUTH_FRONTEND_CALLBACK supports multiple SPA callback URLs (comma-separated):
- *   https://rfincare.com/oauth/callback,https://www.rfincare.com/oauth/callback,https://app.vercel.app/oauth/callback
- *
- * The OAuth start route accepts ?return_origin=<origin> (must match one of the URLs above).
+ * OAUTH_FRONTEND_CALLBACK supports multiple SPA callback URLs (comma-separated).
+ * DB settings (oauth_global_settings) override env when configured via admin.
  */
+
+let cachedCallbacks = null;
+let cacheAt = 0;
+const CACHE_MS = 30_000;
+
+async function loadCallbackUrls() {
+  if (cachedCallbacks && Date.now() - cacheAt < CACHE_MS) {
+    return cachedCallbacks;
+  }
+  try {
+    const { getOAuthGlobalSettings } = await import('./oauthProviderSettings.js');
+    const global = await getOAuthGlobalSettings();
+    cachedCallbacks = global.frontendCallbackUrls?.length ? global.frontendCallbackUrls : null;
+    cacheAt = Date.now();
+    return cachedCallbacks;
+  } catch {
+    return null;
+  }
+}
 
 export function getPublicSiteOrigin() {
   if (process.env.API_PUBLIC_URL) {
@@ -17,7 +34,7 @@ export function getPublicSiteOrigin() {
   return `http://127.0.0.1:${process.env.API_PORT || 8080}`;
 }
 
-function parseCallbackList() {
+function parseCallbackListFromEnv() {
   const raw = process.env.OAUTH_FRONTEND_CALLBACK || '';
   const urls = raw
     .split(',')
@@ -33,9 +50,16 @@ function parseCallbackList() {
   return ['http://127.0.0.1:4028/oauth/callback'];
 }
 
-/** All allowed SPA OAuth callback URLs. */
+/** All allowed SPA OAuth callback URLs (sync — env only). */
 export function getOAuthFrontendCallbackUrls() {
-  return parseCallbackList();
+  return parseCallbackListFromEnv();
+}
+
+/** Async: DB admin settings with env fallback. */
+export async function getOAuthFrontendCallbackUrlsAsync() {
+  const fromDb = await loadCallbackUrls();
+  if (fromDb?.length) return fromDb;
+  return parseCallbackListFromEnv();
 }
 
 /** Default (first listed) callback URL. */
@@ -55,8 +79,7 @@ function originOfCallbackUrl(callbackUrl) {
  * Pick callback URL for the frontend that started sign-in.
  * @param {string} [returnOrigin] e.g. https://rfincare.com
  */
-export function resolveOAuthFrontendCallback(returnOrigin) {
-  const urls = getOAuthFrontendCallbackUrls();
+export function resolveOAuthFrontendCallback(returnOrigin, urls = getOAuthFrontendCallbackUrls()) {
   if (!returnOrigin) return urls[0];
 
   const normalized = returnOrigin.replace(/\/$/, '');
@@ -64,8 +87,17 @@ export function resolveOAuthFrontendCallback(returnOrigin) {
   return match || urls[0];
 }
 
+export async function resolveOAuthFrontendCallbackAsync(returnOrigin) {
+  const urls = await getOAuthFrontendCallbackUrlsAsync();
+  return resolveOAuthFrontendCallback(returnOrigin, urls);
+}
+
 /** Ensure cookie-stored callback is in the allowlist. */
-export function isAllowedOAuthFrontendCallback(callbackUrl) {
-  const urls = getOAuthFrontendCallbackUrls();
+export function isAllowedOAuthFrontendCallback(callbackUrl, urls = getOAuthFrontendCallbackUrls()) {
   return urls.some((u) => u === callbackUrl);
+}
+
+export async function isAllowedOAuthFrontendCallbackAsync(callbackUrl) {
+  const urls = await getOAuthFrontendCallbackUrlsAsync();
+  return isAllowedOAuthFrontendCallback(callbackUrl, urls);
 }

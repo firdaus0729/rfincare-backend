@@ -4,6 +4,15 @@ import { z } from 'zod';
 import { getPool } from '../db/pool.js';
 import { newId } from '../lib/ids.js';
 import { getSiteContactSettings, updateSiteContactSettings } from '../lib/siteContactSettings.js';
+import { getHomepageTrustContent, upsertHomepageTrustContent } from '../lib/homepageTrustContent.js';
+import {
+  EMAIL_PROVIDERS,
+  getOtpProviderSettings,
+  SMS_PROVIDERS,
+  updateOtpProviderSettings,
+} from '../lib/otpProviderSettings.js';
+import { getOAuthAdminPayload, updateOAuthSettings } from '../lib/oauthProviderSettings.js';
+import { getAboutPageContent, upsertAboutPageContent } from '../lib/aboutPageContent.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { requireRoles } from '../middleware/requireRoles.js';
 
@@ -59,6 +68,83 @@ const SiteContactSchema = z.object({
   socialInstagram: z.string().optional(),
 });
 
+const TrustSignalItemSchema = z.object({
+  id: z.string().min(1),
+  value: z.string().min(1),
+  label: z.string().min(1),
+  icon: z.string().min(1),
+  color: z.string().min(1),
+});
+
+const CertificationItemSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  icon: z.string().min(1),
+  description: z.string().min(1),
+});
+
+const HomepageTrustContentSchema = z.object({
+  heading: z.string().min(1),
+  subtitle: z.string().optional(),
+  stats: z.array(TrustSignalItemSchema).min(1),
+  certifications: z.array(CertificationItemSchema).min(1),
+});
+
+const AboutStatItemSchema = z.object({
+  id: z.string().min(1),
+  value: z.string().min(1),
+  label: z.string().min(1),
+});
+
+const AboutValueItemSchema = z.object({
+  id: z.string().min(1),
+  icon: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().min(1),
+});
+
+const OAuthProviderConfigSchema = z.object({
+  provider: z.enum(['google', 'microsoft', 'apple']),
+  enabled: z.boolean(),
+  clientId: z.string().optional(),
+  clientSecret: z.string().optional(),
+  redirectUri: z.string().url().optional().or(z.literal('')),
+});
+
+const OAuthSettingsSchema = z.object({
+  global: z
+    .object({
+      apiPublicBaseUrl: z.string().url().optional().or(z.literal('')),
+      frontendCallbackUrls: z.array(z.string().url()).optional(),
+      requireAppliedCustomerEmail: z.boolean().optional(),
+    })
+    .optional(),
+  providers: z.array(OAuthProviderConfigSchema).optional(),
+});
+
+const OtpProviderSettingsSchema = z.object({
+  smsProvider: z.enum(SMS_PROVIDERS),
+  emailProvider: z.enum(EMAIL_PROVIDERS),
+  requireMobileOtp: z.boolean().optional(),
+  requireEmailOtp: z.boolean().optional(),
+  providerConfig: z
+    .object({
+      msg91SenderId: z.string().optional(),
+      msg91TemplateId: z.string().optional(),
+      otpMessageTemplate: z.string().optional(),
+    })
+    .optional(),
+});
+
+const AboutPageContentSchema = z.object({
+  heroTitle: z.string().min(1),
+  heroSubtitle: z.string().min(1),
+  stats: z.array(AboutStatItemSchema).min(1),
+  values: z.array(AboutValueItemSchema).min(1),
+  storyHeading: z.string().min(1),
+  storyParagraphs: z.array(z.string().min(1)).min(1),
+});
+
 cmsRouter.get('/site-contact', async (req, res, next) => {
   try {
     res.json(await getSiteContactSettings());
@@ -71,6 +157,78 @@ cmsRouter.put('/site-contact', async (req, res, next) => {
   try {
     const input = SiteContactSchema.parse(req.body);
     const updated = await updateSiteContactSettings(input, req.auth.userId);
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/homepage/trust-signals', async (_req, res, next) => {
+  try {
+    res.json(await getHomepageTrustContent());
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.put('/homepage/trust-signals', async (req, res, next) => {
+  try {
+    const input = HomepageTrustContentSchema.parse(req.body);
+    const updated = await upsertHomepageTrustContent(input, req.auth.userId);
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/about-content', async (_req, res, next) => {
+  try {
+    res.json(await getAboutPageContent());
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/oauth-settings', async (_req, res, next) => {
+  try {
+    res.json(await getOAuthAdminPayload());
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.put('/oauth-settings', async (req, res, next) => {
+  try {
+    const input = OAuthSettingsSchema.parse(req.body);
+    const updated = await updateOAuthSettings(input, req.auth.userId);
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/otp-settings', async (_req, res, next) => {
+  try {
+    res.json(await getOtpProviderSettings());
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.put('/otp-settings', async (req, res, next) => {
+  try {
+    const input = OtpProviderSettingsSchema.parse(req.body);
+    const updated = await updateOtpProviderSettings(input, req.auth.userId);
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.put('/about-content', async (req, res, next) => {
+  try {
+    const input = AboutPageContentSchema.parse(req.body);
+    const updated = await upsertAboutPageContent(input, req.auth.userId);
     res.json(updated);
   } catch (err) {
     next(err);

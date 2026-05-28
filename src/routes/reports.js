@@ -315,9 +315,24 @@ reportsRouter.get(
 
       switch (reportKey) {
         case 'application_volume':
-          columns = ['application_number', 'status', 'customer_email', 'created_at'];
+          columns = [
+            'application_id',
+            'application_number',
+            'customer_name',
+            'customer_mobile',
+            'customer_email',
+            'status',
+            'created_at',
+          ];
           [rows] = await pool.execute(
-            `SELECT la.application_number, la.status, up.email AS customer_email, la.created_at
+            `SELECT
+                la.id AS application_id,
+                la.application_number,
+                COALESCE(up.full_name, '') AS customer_name,
+                COALESCE(up.phone, '') AS customer_mobile,
+                up.email AS customer_email,
+                la.status,
+                la.created_at
              FROM loan_applications la
              JOIN user_profiles up ON up.id = la.customer_id
              WHERE la.created_at BETWEEN :start AND :end

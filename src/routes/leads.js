@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { getPool } from '../db/pool.js';
 import { ensureOnboardingSchema } from '../db/ensureOnboardingSchema.js';
 import { newId } from '../lib/ids.js';
-import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
+import { hashOtp, sendDualChannelOtp, sendOtpNotification } from '../lib/otp.js';
+import { getOtpProviderSettings } from '../lib/otpProviderSettings.js';
 import { createResumeToken, upsertLeadFromDraft } from '../lib/resumeTokens.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { hasPermission } from '../auth/permissions.js';
@@ -89,36 +90,88 @@ leadsRouter.post('/', async (req, res, next) => {
   }
 });
 
+leadsRouter.get('/otp-settings', async (_req, res, next) => {
+  try {
+    const settings = await getOtpProviderSettings();
+    res.json({
+      requireMobileOtp: settings.requireMobileOtp,
+      requireEmailOtp: settings.requireEmailOtp,
+      smsProvider: settings.smsProvider,
+      emailProvider: settings.emailProvider,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 leadsRouter.post('/request-otp', async (req, res, next) => {
   try {
     const { phone, email, leadId } = z
       .object({
         phone: z.string().min(10),
-        email: z.string().email().optional(),
+        email: z.string().email(),
         leadId: z.string().optional(),
       })
       .parse(req.body);
 
     const pool = getPool();
-    const otp = generateOtp();
-    const id = newId();
+    const settings = await getOtpProviderSettings();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    await pool.execute(
-      `INSERT INTO lead_otps (id, lead_id, email, phone, otp_hash, purpose, channel, expires_at)
-       VALUES (:id, :lead_id, :email, :phone, :hash, 'lead_verify', 'sms', :exp)`,
-      {
-        id,
-        lead_id: leadId || null,
-        email: email || null,
-        phone,
-        hash: hashOtp(otp),
-        exp: expiresAt,
-      },
-    );
+    const { mobileOtp, emailOtp } = await sendDualChannelOtp({
+      phone,
+      email,
+      settings,
+    });
 
-    await sendOtpNotification({ phone, email, otp, channel: 'sms' });
-    res.json({ success: true, otpId: id, expiresInSeconds: 600 });
+    const otpIds = {};
+
+    if (settings.requireMobileOtp !== false && mobileOtp) {
+      const smsId = newId();
+      await pool.execute(
+        `INSERT INTO lead_otps (id, lead_id, email, phone, otp_hash, purpose, channel, expires_at)
+         VALUES (:id, :lead_id, :email, :phone, :hash, 'lead_verify', 'sms', :exp)`,
+        {
+          id: smsId,
+          lead_id: leadId || null,
+          email,
+          phone,
+          hash: hashOtp(mobileOtp),
+          exp: expiresAt,
+        },
+      );
+      otpIds.sms = smsId;
+    }
+
+    if (settings.requireEmailOtp !== false && emailOtp) {
+      const emailId = newId();
+      await pool.execute(
+        `INSERT INTO lead_otps (id, lead_id, email, phone, otp_hash, purpose, channel, expires_at)
+         VALUES (:id, :lead_id, :email, :phone, :hash, 'lead_verify', 'email', :exp)`,
+        {
+          id: emailId,
+          lead_id: leadId || null,
+          email,
+          phone,
+          hash: hashOtp(emailOtp),
+          exp: expiresAt,
+        },
+      );
+      otpIds.email = emailId;
+    }
+
+    res.json({
+      success: true,
+      otpIds,
+      expiresInSeconds: 600,
+      requireMobileOtp: settings.requireMobileOtp,
+      requireEmailOtp: settings.requireEmailOtp,
+      smsProvider: settings.smsProvider,
+      emailProvider: settings.emailProvider,
+      ...(process.env.LOG_OTP === 'true'
+        ? { devMobileOtp: mobileOtp, devEmailOtp: emailOtp }
+        : {}),
+    });
   } catch (err) {
     next(err);
   }
@@ -126,30 +179,66 @@ leadsRouter.post('/request-otp', async (req, res, next) => {
 
 leadsRouter.post('/verify-otp', async (req, res, next) => {
   try {
-    const { phone, otp, leadId } = z
+    const body = z
       .object({
         phone: z.string().min(10),
-        otp: z.string().length(6),
+        email: z.string().email(),
+        mobileOtp: z.string().length(6).optional(),
+        emailOtp: z.string().length(6).optional(),
+        otp: z.string().length(6).optional(),
         leadId: z.string().optional(),
       })
       .parse(req.body);
 
-    const pool = getPool();
-    const [[otpRow]] = await pool.execute(
-      `SELECT id, lead_id FROM lead_otps
-       WHERE phone = :phone AND otp_hash = :hash AND purpose = 'lead_verify'
-         AND verified_at IS NULL AND expires_at > NOW(3)
-       ORDER BY created_at DESC LIMIT 1`,
-      { phone, hash: hashOtp(otp) },
-    );
+    const settings = await getOtpProviderSettings();
+    const mobileCode = body.mobileOtp || (settings.requireEmailOtp === false ? body.otp : undefined);
+    const emailCode = body.emailOtp || (settings.requireMobileOtp === false ? body.otp : undefined);
 
-    if (!otpRow) {
-      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    if (settings.requireMobileOtp && !mobileCode) {
+      return res.status(400).json({ error: 'Mobile OTP is required.' });
+    }
+    if (settings.requireEmailOtp && !emailCode) {
+      return res.status(400).json({ error: 'Email OTP is required.' });
     }
 
-    await pool.execute(`UPDATE lead_otps SET verified_at = NOW(3) WHERE id = :id`, { id: otpRow.id });
+    const pool = getPool();
+    let smsRow = null;
+    let emailRow = null;
 
-    const targetLeadId = leadId || otpRow.lead_id;
+    if (settings.requireMobileOtp && mobileCode) {
+      const [[row]] = await pool.execute(
+        `SELECT id, lead_id FROM lead_otps
+         WHERE phone = :phone AND otp_hash = :hash AND purpose = 'lead_verify' AND channel = 'sms'
+           AND verified_at IS NULL AND expires_at > NOW(3)
+         ORDER BY created_at DESC LIMIT 1`,
+        { phone: body.phone, hash: hashOtp(mobileCode) },
+      );
+      smsRow = row;
+      if (!smsRow) {
+        return res.status(401).json({ error: 'Invalid or expired mobile OTP.' });
+      }
+    }
+
+    if (settings.requireEmailOtp && emailCode) {
+      const [[row]] = await pool.execute(
+        `SELECT id, lead_id FROM lead_otps
+         WHERE email = :email AND otp_hash = :hash AND purpose = 'lead_verify' AND channel = 'email'
+           AND verified_at IS NULL AND expires_at > NOW(3)
+         ORDER BY created_at DESC LIMIT 1`,
+        { email: body.email, hash: hashOtp(emailCode) },
+      );
+      emailRow = row;
+      if (!emailRow) {
+        return res.status(401).json({ error: 'Invalid or expired email OTP.' });
+      }
+    }
+
+    const idsToMark = [smsRow?.id, emailRow?.id].filter(Boolean);
+    for (const id of idsToMark) {
+      await pool.execute(`UPDATE lead_otps SET verified_at = NOW(3) WHERE id = :id`, { id });
+    }
+
+    const targetLeadId = body.leadId || smsRow?.lead_id || emailRow?.lead_id;
     if (targetLeadId) {
       await pool.execute(
         `UPDATE marketing_leads SET consent_verified_at = NOW(3), status = 'verified' WHERE id = :id`,
