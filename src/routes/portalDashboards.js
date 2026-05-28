@@ -68,8 +68,13 @@ portalDashboardsRouter.get('/agent/dashboard', authenticate, async (req, res, ne
 
     await ensureStaffExtrasSchema();
     const [commissions] = await pool.execute(
-      `SELECT * FROM agent_commission_config WHERE agent_user_id = :id ORDER BY updated_at DESC`,
-      { id: agentId },
+      `SELECT * FROM global_commission_config WHERE id = 'default' LIMIT 1`,
+    );
+    const [circulars] = await pool.execute(
+      `SELECT id, title, description, file_name, file_url, created_at
+       FROM agent_commission_circulars
+       WHERE is_active = 1
+       ORDER BY created_at DESC`,
     );
 
     res.json({
@@ -88,6 +93,7 @@ portalDashboardsRouter.get('/agent/dashboard', authenticate, async (req, res, ne
       ],
       clients: apps.map(mapAppToClient),
       commissions,
+      circulars,
       weeklyPerformance: [
         { name: 'W1', clients: Math.ceil(total * 0.2), conversions: Math.ceil(approved * 0.2), earnings: Math.ceil(commissionEstimate * 0.2) },
         { name: 'W2', clients: Math.ceil(total * 0.25), conversions: Math.ceil(approved * 0.25), earnings: Math.ceil(commissionEstimate * 0.25) },

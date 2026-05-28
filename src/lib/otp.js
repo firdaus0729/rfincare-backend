@@ -54,6 +54,42 @@ async function sendViaTwilio({ phone, message }) {
   return { sent: true, provider: 'twilio' };
 }
 
+async function sendViaTwilioWhatsapp({ phone, message }) {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from = process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE_NUMBER;
+  if (!sid || !token || !from) {
+    throw new Error(
+      'Twilio WhatsApp is not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER.',
+    );
+  }
+
+  const auth = Buffer.from(`${sid}:${token}`).toString('base64');
+  const clean = phone.replace(/\D/g, '').slice(-10);
+  const to = `whatsapp:+91${clean}`;
+  const fromValue = from.startsWith('whatsapp:') ? from : `whatsapp:${from}`;
+  const body = new URLSearchParams({
+    To: to,
+    From: fromValue,
+    Body: message,
+  });
+
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${auth}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body,
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Twilio WhatsApp failed: ${errText.slice(0, 200)}`);
+  }
+  return { sent: true, provider: 'twilio' };
+}
+
 async function sendViaMsg91({ phone, otp, config }) {
   const authKey = process.env.MSG91_AUTH_KEY;
   if (!authKey) {
@@ -133,6 +169,24 @@ async function sendEmailOtp({ email, otp, settings }) {
   throw new Error(`Unknown email provider: ${provider}`);
 }
 
+async function sendWhatsappOtp({ phone, otp, settings }) {
+  const provider = settings?.whatsappProvider || 'console';
+  const message = formatOtpMessage(settings?.providerConfig?.otpMessageTemplate, otp);
+
+  if (provider === 'console') {
+    console.log('[otp:whatsapp]', { phone: maskPhone(phone), provider }, process.env.LOG_OTP === 'true' ? otp : '(hidden)');
+    return { sent: true, provider: 'console' };
+  }
+  if (provider === 'twilio') {
+    return sendViaTwilioWhatsapp({ phone, message });
+  }
+  if (provider === 'msg91') {
+    // Fallback through MSG91 message API; provider route decides WhatsApp template routing if configured.
+    return sendViaMsg91({ phone, otp, config: settings?.providerConfig });
+  }
+  throw new Error(`Unknown WhatsApp provider: ${provider}`);
+}
+
 /**
  * Send OTP via configured operators. `channel` may be sms | email | both (default both when settings require it).
  */
@@ -148,6 +202,10 @@ export async function sendOtpNotification({ email, phone, otp, channel, settings
     channel === 'email' ||
     channel === 'both' ||
     (!channel && settings.requireEmailOtp);
+  const wantWhatsapp =
+    channel === 'whatsapp' ||
+    channel === 'both' ||
+    (!channel && settings.requireWhatsappOtp);
 
   const results = {};
 
@@ -159,6 +217,11 @@ export async function sendOtpNotification({ email, phone, otp, channel, settings
   if (wantEmail && email) {
     results.email = await sendEmailOtp({ email, otp, settings });
     channels.push('email');
+  }
+
+  if (wantWhatsapp && phone) {
+    results.whatsapp = await sendWhatsappOtp({ phone, otp, settings });
+    channels.push('whatsapp');
   }
 
   if (!channels.length) {

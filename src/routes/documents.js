@@ -9,6 +9,7 @@ import { authorize } from '../middleware/authorize.js';
 import { hasPermission } from '../auth/permissions.js';
 import { getPool } from '../db/pool.js';
 import { ensureDocumentSchema } from '../db/ensureDocumentSchema.js';
+import { ensureDocumentRequirementsSchema } from '../db/ensureDocumentRequirementsSchema.js';
 import { newId } from '../lib/ids.js';
 import { writeAuditLog } from '../lib/audit.js';
 
@@ -51,6 +52,93 @@ function summarizeApplicationDocStatus(counts) {
   if (pending > 0) return 'pending_review';
   if (approved === total) return 'all_approved';
   return 'in_review';
+}
+
+function parseJson(value, fallback = {}) {
+  if (!value) return fallback;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeLoanType(rawLoanType, productType) {
+  const value = String(rawLoanType || '').toLowerCase();
+  if (value === 'secured' || value === 'unsecured') return value;
+  const key = `${value} ${String(productType || '').toLowerCase()}`;
+  if (
+    key.includes('home')
+    || key.includes('mortgage')
+    || key.includes('property')
+    || key.includes('auto')
+    || key.includes('car')
+    || key.includes('gold')
+  ) {
+    return 'secured';
+  }
+  return value ? 'unsecured' : null;
+}
+
+function normalizeAllowedTypes(value) {
+  const list = Array.isArray(value) ? value : parseJson(value, []);
+  return [...new Set((list || []).map((entry) => String(entry || '').trim().toLowerCase()).filter(Boolean))];
+}
+
+function mimeToShortType(mimeType) {
+  const mt = String(mimeType || '').toLowerCase();
+  if (mt.includes('pdf')) return 'pdf';
+  if (mt.includes('png')) return 'png';
+  if (mt.includes('jpg') || mt.includes('jpeg')) return 'jpeg';
+  if (mt.includes('webp')) return 'webp';
+  return mt;
+}
+
+async function resolveRequirementsForApplication(pool, applicationId) {
+  await ensureDocumentRequirementsSchema();
+  const [[app]] = await pool.execute(
+    `SELECT selected_bank_id, data FROM loan_applications WHERE id = :id LIMIT 1`,
+    { id: applicationId },
+  );
+  if (!app) return [];
+  const data = parseJson(app.data, {});
+  const bankId = app.selected_bank_id || data.preferred_bank_id || data.preferredBankId || null;
+  const productType =
+    data.loan_purpose
+    || data.loanPurpose
+    || data.loan_type
+    || data.loanType
+    || null;
+  const loanType = normalizeLoanType(data.loan_type || data.loanType, productType);
+
+  const [rows] = await pool.execute(
+    `SELECT *
+     FROM document_requirements
+     WHERE is_active = 1
+       AND (bank_id = :bank_id OR bank_id IS NULL)
+       AND (LOWER(COALESCE(product_type, '')) = LOWER(COALESCE(:product_type, '')) OR product_type IS NULL OR product_type = '')
+       AND (LOWER(COALESCE(loan_type, '')) = LOWER(COALESCE(:loan_type, '')) OR loan_type IS NULL OR loan_type = '')
+     ORDER BY
+       CASE WHEN bank_id IS NULL THEN 1 ELSE 0 END ASC,
+       CASE WHEN product_type IS NULL OR product_type = '' THEN 1 ELSE 0 END ASC,
+       CASE WHEN loan_type IS NULL OR loan_type = '' THEN 1 ELSE 0 END ASC,
+       sort_order ASC,
+       created_at ASC`,
+    {
+      bank_id: bankId || null,
+      product_type: productType || null,
+      loan_type: loanType || null,
+    },
+  );
+
+  const chosenByType = new Map();
+  for (const row of rows) {
+    const key = String(row.document_type || '').toLowerCase();
+    if (!key || chosenByType.has(key)) continue;
+    chosenByType.set(key, row);
+  }
+  return Array.from(chosenByType.values());
 }
 
 const uploadDir = process.env.UPLOAD_DIR || './uploads';
@@ -229,6 +317,27 @@ documentsRouter.post(
       const customerId = req.body.customerId || req.auth.userId;
       const applicationId = req.body.applicationId || null;
       const documentType = req.body.documentType || null;
+
+      if (applicationId && documentType) {
+        const requirements = await resolveRequirementsForApplication(pool, applicationId);
+        if (requirements.length) {
+          const normalizedDocType = String(documentType).replace(/^co_applicant_/, '').toLowerCase();
+          const requirement = requirements.find(
+            (item) => String(item.document_type || '').toLowerCase() === normalizedDocType,
+          );
+          if (requirement) {
+            const allowed = normalizeAllowedTypes(requirement.allowed_file_types_json);
+            if (allowed.length) {
+              const fileType = mimeToShortType(file.mimetype);
+              if (!allowed.includes(fileType) && !allowed.includes(file.mimetype.toLowerCase())) {
+                return res.status(400).json({
+                  error: `Invalid file type for ${requirement.title}. Allowed: ${allowed.join(', ')}`,
+                });
+              }
+            }
+          }
+        }
+      }
 
       const filePath = file.path;
       const documentUrl = `/documents/${docId}/download`;

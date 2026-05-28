@@ -224,6 +224,10 @@ reportsRouter.get(
           name: r.name || 'Agent',
           clients: Number(r.clients || 0),
           conversions: Number(r.conversions || 0),
+          successRate:
+            Number(r.clients || 0) > 0
+              ? Number(((Number(r.conversions || 0) / Number(r.clients || 0)) * 100).toFixed(1))
+              : 0,
           earnings: Number(r.conversions || 0) * 2500,
         })),
       );
@@ -321,7 +325,10 @@ reportsRouter.get(
             'customer_name',
             'customer_mobile',
             'customer_email',
+            'agent_code',
             'status',
+            'document_stage_status',
+            'bank_approval_status',
             'created_at',
           ];
           [rows] = await pool.execute(
@@ -332,19 +339,38 @@ reportsRouter.get(
                 COALESCE(up.phone, '') AS customer_mobile,
                 up.email AS customer_email,
                 la.status,
+                COALESCE(la.sourced_agent_code, ao.agent_code, '') AS agent_code,
+                la.document_stage_status,
+                la.bank_approval_status,
                 la.created_at
              FROM loan_applications la
              JOIN user_profiles up ON up.id = la.customer_id
+             LEFT JOIN agent_onboarding ao ON ao.user_id = la.agent_id
              WHERE la.created_at BETWEEN :start AND :end
              ORDER BY la.created_at DESC`,
             params,
           );
           break;
         case 'agent_performance':
-          columns = ['agent_name', 'agent_code', 'applications', 'approved', 'success_rate'];
+          columns = [
+            'agent_name',
+            'agent_code',
+            'customer_ids',
+            'applications',
+            'total_application_approved',
+            'approved',
+            'success_rate',
+          ];
           [rows] = await pool.execute(
-            `SELECT up.full_name AS agent_name, ao.agent_code,
+            `SELECT up.full_name AS agent_name,
+                    COALESCE(
+                      ao.agent_code,
+                      MAX(NULLIF(la.sourced_agent_code, '')),
+                      CONCAT('AGT-', UPPER(SUBSTRING(up.id, 1, 8)))
+                    ) AS agent_code,
+                    COALESCE(GROUP_CONCAT(DISTINCT la.customer_id ORDER BY la.created_at DESC SEPARATOR ', '), '') AS customer_ids,
                     COUNT(la.id) AS applications,
+                    SUM(CASE WHEN la.status = 'approved' THEN 1 ELSE 0 END) AS total_application_approved,
                     SUM(CASE WHEN la.status = 'approved' THEN 1 ELSE 0 END) AS approved,
                     ROUND(100 * SUM(CASE WHEN la.status = 'approved' THEN 1 ELSE 0 END) / NULLIF(COUNT(la.id), 0), 1) AS success_rate
              FROM user_profiles up

@@ -54,6 +54,11 @@ function normalizeRuleInput(body = {}) {
     max_loan_amount: pick(body, 'max_loan_amount', 'maxLoanAmount') ?? null,
     min_age: pick(body, 'min_age', 'minAge') ?? null,
     max_age: pick(body, 'max_age', 'maxAge') ?? null,
+    foir_unsecured: pick(body, 'foir_unsecured', 'foirUnsecured') ?? null,
+    foir_secured: pick(body, 'foir_secured', 'foirSecured') ?? null,
+    tenure_unsecured_months: pick(body, 'tenure_unsecured_months', 'tenureUnsecuredMonths') ?? null,
+    tenure_secured_months: pick(body, 'tenure_secured_months', 'tenureSecuredMonths') ?? null,
+    ltv_ratio: pick(body, 'ltv_ratio', 'ltvRatio') ?? null,
   };
 
   return {
@@ -103,6 +108,20 @@ function formatRule(row) {
     minAge: d.min_age ?? d.minAge ?? null,
     max_age: d.max_age ?? d.maxAge ?? null,
     maxAge: d.max_age ?? d.maxAge ?? null,
+    foir_unsecured: d.foir_unsecured ?? d.foirUnsecured ?? null,
+    foirUnsecured: d.foir_unsecured ?? d.foirUnsecured ?? null,
+    foir_secured: d.foir_secured ?? d.foirSecured ?? null,
+    foirSecured: d.foir_secured ?? d.foirSecured ?? null,
+    tenure_unsecured_months:
+      d.tenure_unsecured_months ?? d.tenureUnsecuredMonths ?? null,
+    tenureUnsecuredMonths:
+      d.tenure_unsecured_months ?? d.tenureUnsecuredMonths ?? null,
+    tenure_secured_months:
+      d.tenure_secured_months ?? d.tenureSecuredMonths ?? null,
+    tenureSecuredMonths:
+      d.tenure_secured_months ?? d.tenureSecuredMonths ?? null,
+    ltv_ratio: d.ltv_ratio ?? d.ltvRatio ?? null,
+    ltvRatio: d.ltv_ratio ?? d.ltvRatio ?? null,
     approval_probability: row.approval_probability,
     approvalProbability: row.approval_probability,
     is_active: !!row.is_active,

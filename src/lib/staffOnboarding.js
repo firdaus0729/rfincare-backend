@@ -155,7 +155,7 @@ export async function createEmployeeAccount(input, createdByUserId) {
       `INSERT INTO user_profiles (
          id, email, full_name, phone, role, account_status, is_active, onboarding_status
        ) VALUES (
-         :id, :email, :fullName, :phone, 'employee', 'pending', 0, 'pending'
+         :id, :email, :fullName, :phone, 'employee', 'active', 1, 'active'
        )`,
       {
         id: userId,
@@ -171,7 +171,7 @@ export async function createEmployeeAccount(input, createdByUserId) {
          account_number, bank_name, ifsc_code, onboarding_status, created_by
        ) VALUES (
          :id, :user_id, :username, :employee_name, :employee_code, :email, :mobile_number,
-         :account_number, :bank_name, :ifsc_code, 'pending', :created_by
+         :account_number, :bank_name, :ifsc_code, 'active', :created_by
        )`,
       {
         id: onboardingId,

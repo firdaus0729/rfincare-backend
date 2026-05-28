@@ -27,6 +27,7 @@ import { loanProductCatalogRouter } from './routes/loanProductCatalog.js';
 import { interestMatrixRouter } from './routes/interestMatrix.js';
 import { reportsRouter } from './routes/reports.js';
 import { portalDashboardsRouter } from './routes/portalDashboards.js';
+import { documentRequirementsRouter } from './routes/documentRequirements.js';
 import { getCorsOptions } from './lib/corsOptions.js';
 
 export function createApp({ serveStatic = true } = {}) {
@@ -68,6 +69,8 @@ export function createApp({ serveStatic = true } = {}) {
   app.use('/reports', reportsRouter);
   app.use('/admin/reports', reportsRouter);
   app.use('/portal', portalDashboardsRouter);
+  app.use('/document-requirements', documentRequirementsRouter);
+  app.use('/admin/document-requirements', documentRequirementsRouter);
 
   const uploadDir = process.env.UPLOAD_DIR
     ? path.resolve(process.env.UPLOAD_DIR)

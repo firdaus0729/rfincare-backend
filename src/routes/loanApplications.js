@@ -16,6 +16,27 @@ export const loanApplicationsRouter = Router();
 const STAFF_ROLES = new Set(['admin', 'super_admin', 'employee']);
 const ADMIN_DELETE_ROLES = new Set(['admin', 'super_admin']);
 const ADMIN_DELETE_OTP_PURPOSE = 'admin_delete_apps';
+const DOCUMENT_STAGE_OPTIONS = new Set([
+  'documents_pending',
+  'documents_received',
+  'at_kyc_stage',
+  'at_bgv_stage',
+  'at_credit_stage',
+  'at_property_valuation_stage',
+  'at_property_technical_stage',
+  'at_disbursement_stage',
+  'documents_verified',
+]);
+const BANK_APPROVAL_STAGE_OPTIONS = new Set([
+  'submitted_to_bank',
+  'at_kyc_stage',
+  'at_bgv_stage',
+  'at_credit_stage',
+  'at_property_valuation_stage',
+  'at_property_technical_stage',
+  'at_disbursement_stage',
+  'bank_rejected',
+]);
 
 function canDeleteApplications(role) {
   return ADMIN_DELETE_ROLES.has(role) || hasPermission(role, 'delete:loan_applications');
@@ -75,6 +96,15 @@ function parseJson(value) {
   } catch {
     return {};
   }
+}
+
+async function resolveAgentCode(pool, agentId) {
+  if (!agentId) return null;
+  const [[agent]] = await pool.execute(
+    `SELECT agent_code FROM agent_onboarding WHERE user_id = :id LIMIT 1`,
+    { id: agentId },
+  );
+  return agent?.agent_code || null;
 }
 
 function canReadAllApplications(role) {
@@ -141,9 +171,14 @@ function formatApplication(row) {
     application_number: row.application_number,
     customer_id: row.customer_id,
     agent_id: row.agent_id,
+    sourced_agent_code: row.sourced_agent_code || null,
     assigned_employee_id: row.assigned_employee_id,
+    qc_employee_id: row.qc_employee_id || null,
+    qc_admin_id: row.qc_admin_id || null,
     selected_bank_id: row.selected_bank_id,
     status: row.status,
+    document_stage_status: row.document_stage_status || 'documents_pending',
+    bank_approval_status: row.bank_approval_status || 'submitted_to_bank',
     status_notes: row.status_notes,
     review_notes: row.review_notes,
     eligibility_status: row.eligibility_status,
@@ -151,6 +186,7 @@ function formatApplication(row) {
     submitted_at: row.submitted_at,
     reviewed_by: row.reviewed_by,
     reviewed_at: row.reviewed_at,
+    qc_updated_at: row.qc_updated_at || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     loan_type: loan.loan_type,
@@ -547,17 +583,27 @@ loanApplicationsRouter.post(
 
       await pool.execute(
         `INSERT INTO loan_applications (
-          id, application_number, customer_id, agent_id, assigned_employee_id,
-          selected_bank_id, status, eligibility_status, data
+          id, application_number, customer_id, agent_id, sourced_agent_code, assigned_employee_id,
+          qc_employee_id, qc_admin_id, selected_bank_id, status, document_stage_status,
+          bank_approval_status, eligibility_status, data
         ) VALUES (
-          :id, :application_number, :customer_id, :agent_id, :assigned_employee_id,
-          :selected_bank_id, :status, :eligibility_status, :data
+          :id, :application_number, :customer_id, :agent_id, :sourced_agent_code, :assigned_employee_id,
+          :qc_employee_id, :qc_admin_id, :selected_bank_id, :status, :document_stage_status,
+          :bank_approval_status, :eligibility_status, :data
         )`,
         {
+          agent_id: body.agent_id || null,
+          sourced_agent_code:
+            body.sourced_agent_code
+            || body.agent_code
+            || (body.agent_id ? await resolveAgentCode(pool, body.agent_id) : null),
+          qc_employee_id: body.qc_employee_id || null,
+          qc_admin_id: body.qc_admin_id || null,
+          document_stage_status: body.document_stage_status || 'documents_pending',
+          bank_approval_status: body.bank_approval_status || 'submitted_to_bank',
           id,
           application_number: body.application_number || `RFC${Date.now()}`,
           customer_id: customerId,
-          agent_id: body.agent_id || null,
           assigned_employee_id: body.assigned_employee_id || null,
           selected_bank_id: body.selected_bank_id || null,
           status: body.status || 'draft',
@@ -580,8 +626,13 @@ const PatchSchema = z.object({
   review_notes: z.string().optional(),
   rejection_reason: z.string().optional(),
   selected_bank_id: z.string().optional(),
+  sourced_agent_code: z.string().optional(),
   assigned_employee_id: z.string().optional(),
+  qc_employee_id: z.string().optional(),
+  qc_admin_id: z.string().optional(),
   eligibility_status: z.string().optional(),
+  document_stage_status: z.string().optional(),
+  bank_approval_status: z.string().optional(),
 }).passthrough();
 
 loanApplicationsRouter.patch(
@@ -608,6 +659,13 @@ loanApplicationsRouter.patch(
       }
 
       const input = PatchSchema.parse(req.body);
+      if (!canUpdateAll) {
+        delete input.document_stage_status;
+        delete input.bank_approval_status;
+        delete input.qc_employee_id;
+        delete input.qc_admin_id;
+        delete input.sourced_agent_code;
+      }
       const mergedData = { ...parseJson(existing.data), ...input };
       const {
         status,
@@ -615,14 +673,33 @@ loanApplicationsRouter.patch(
         review_notes,
         rejection_reason,
         selected_bank_id,
+        sourced_agent_code,
         assigned_employee_id,
+        qc_employee_id,
+        qc_admin_id,
         eligibility_status,
+        document_stage_status,
+        bank_approval_status,
         ...rest
       } = input;
+
+      if (document_stage_status && !DOCUMENT_STAGE_OPTIONS.has(document_stage_status)) {
+        return res.status(400).json({ error: 'Invalid document stage status' });
+      }
+      if (bank_approval_status && !BANK_APPROVAL_STAGE_OPTIONS.has(bank_approval_status)) {
+        return res.status(400).json({ error: 'Invalid bank approval status' });
+      }
 
       const statusValue = status ?? null;
       const markReviewed =
         statusValue === 'approved' || statusValue === 'rejected';
+
+      const employeeQcUpdater =
+        req.auth.role === 'employee' && (document_stage_status || bank_approval_status);
+      const adminQcUpdater =
+        (req.auth.role === 'admin' || req.auth.role === 'super_admin')
+        && (document_stage_status || bank_approval_status);
+      const canEditQcIdentity = req.auth.role === 'admin' || req.auth.role === 'super_admin';
 
       await pool.execute(
         `UPDATE loan_applications SET
@@ -631,7 +708,24 @@ loanApplicationsRouter.patch(
           review_notes = COALESCE(:review_notes, review_notes),
           rejection_reason = COALESCE(:rejection_reason, rejection_reason),
           selected_bank_id = COALESCE(:selected_bank_id, selected_bank_id),
+          sourced_agent_code = COALESCE(:sourced_agent_code, sourced_agent_code),
           assigned_employee_id = COALESCE(:assigned_employee_id, assigned_employee_id),
+          qc_employee_id = CASE
+            WHEN :set_qc_employee_auto = 1 THEN :reviewed_by
+            WHEN :can_edit_qc_identity = 1 THEN COALESCE(:qc_employee_id, qc_employee_id)
+            ELSE qc_employee_id
+          END,
+          qc_admin_id = CASE
+            WHEN :set_qc_admin_auto = 1 THEN :reviewed_by
+            WHEN :can_edit_qc_identity = 1 THEN COALESCE(:qc_admin_id, qc_admin_id)
+            ELSE qc_admin_id
+          END,
+          qc_updated_at = CASE
+            WHEN :set_qc_updated = 1 THEN NOW(3)
+            ELSE qc_updated_at
+          END,
+          document_stage_status = COALESCE(:document_stage_status, document_stage_status),
+          bank_approval_status = COALESCE(:bank_approval_status, bank_approval_status),
           eligibility_status = COALESCE(:eligibility_status, eligibility_status),
           reviewed_by = CASE WHEN :mark_reviewed = 1 THEN :reviewed_by ELSE reviewed_by END,
           reviewed_at = CASE WHEN :mark_reviewed = 1 THEN NOW(3) ELSE reviewed_at END,
@@ -644,7 +738,16 @@ loanApplicationsRouter.patch(
           review_notes: review_notes || null,
           rejection_reason: rejection_reason || null,
           selected_bank_id: selected_bank_id || null,
+          sourced_agent_code: sourced_agent_code || null,
           assigned_employee_id: assigned_employee_id || null,
+          qc_employee_id: qc_employee_id || null,
+          qc_admin_id: qc_admin_id || null,
+          can_edit_qc_identity: canEditQcIdentity ? 1 : 0,
+          set_qc_employee_auto: employeeQcUpdater ? 1 : 0,
+          set_qc_admin_auto: adminQcUpdater ? 1 : 0,
+          set_qc_updated: document_stage_status || bank_approval_status ? 1 : 0,
+          document_stage_status: document_stage_status || null,
+          bank_approval_status: bank_approval_status || null,
           eligibility_status: eligibility_status || null,
           mark_reviewed: markReviewed ? 1 : 0,
           reviewed_by: req.auth.userId,
@@ -661,6 +764,21 @@ loanApplicationsRouter.patch(
             application_id: req.params.id,
             status,
             message: review_notes || status_notes || `Status updated to ${status}`,
+          },
+        );
+      }
+
+      if (document_stage_status || bank_approval_status) {
+        await pool.execute(
+          `INSERT INTO application_timeline (id, application_id, status, message)
+           VALUES (:id, :application_id, :status, :message)`,
+          {
+            id: newId(),
+            application_id: req.params.id,
+            status: bank_approval_status || document_stage_status || 'qc_update',
+            message:
+              `QC stage update: document=${document_stage_status || existing.document_stage_status}, `
+              + `bank=${bank_approval_status || existing.bank_approval_status}`,
           },
         );
       }
@@ -697,6 +815,8 @@ loanApplicationsRouter.post(
       await pool.execute(
         `UPDATE loan_applications
          SET status = 'submitted',
+             document_stage_status = COALESCE(document_stage_status, 'documents_pending'),
+             bank_approval_status = 'submitted_to_bank',
              submitted_at = NOW(3),
              selected_bank_id = COALESCE(:selected_bank_id, selected_bank_id)
          WHERE id = :id`,

@@ -1,4 +1,7 @@
 import { Router } from 'express';
+import multer from 'multer';
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { getPool } from '../db/pool.js';
 import { ensureOnboardingSchema } from '../db/ensureOnboardingSchema.js';
@@ -14,6 +17,24 @@ import { approvalMatrixRouter } from './approvalMatrixRules.js';
 import { statusCheckAdminRouter } from './statusCheckAdmin.js';
 
 export const adminRouter = Router();
+
+const uploadRoot = process.env.UPLOAD_DIR || './uploads';
+const circularDir = resolve(uploadRoot, 'commission-circulars');
+mkdirSync(circularDir, { recursive: true });
+const circularUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, circularDir),
+    filename: (_req, file, cb) => {
+      const safe = `${Date.now()}-${Math.random().toString(36).slice(2)}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      cb(null, safe);
+    },
+  }),
+  fileFilter: (_req, file, cb) => {
+    const ok = file.mimetype === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf');
+    cb(ok ? null : new Error('Only PDF files are allowed'), ok);
+  },
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
 
 adminRouter.use('/status-check', statusCheckAdminRouter);
 
@@ -260,7 +281,7 @@ adminRouter.patch(
          SET account_status = COALESCE(:account_status, account_status),
              onboarding_status = COALESCE(:onboarding_status, onboarding_status),
              is_active = CASE WHEN :account_status = 'active' THEN 1 WHEN :account_status IN ('inactive','suspended') THEN 0 ELSE is_active END
-         WHERE id = :id AND role = 'agent'`,
+         WHERE BINARY id = BINARY :id AND role = 'agent'`,
         {
           id: req.params.id,
           account_status: account_status || null,
@@ -270,7 +291,7 @@ adminRouter.patch(
 
       if (status) {
         await pool.execute(
-          `UPDATE agent_onboarding SET onboarding_status = :status WHERE user_id = :id`,
+          `UPDATE agent_onboarding SET onboarding_status = :status WHERE BINARY user_id = BINARY :id`,
           { id: req.params.id, status },
         );
       }
@@ -278,8 +299,8 @@ adminRouter.patch(
       const [[row]] = await pool.execute(
         `SELECT up.*, ao.agent_code, ao.username, ao.onboarding_status AS ao_status
          FROM user_profiles up
-         LEFT JOIN agent_onboarding ao ON ao.user_id = up.id
-         WHERE up.id = :id AND up.role = 'agent' LIMIT 1`,
+         LEFT JOIN agent_onboarding ao ON BINARY ao.user_id = BINARY up.id
+         WHERE BINARY up.id = BINARY :id AND up.role = 'agent' LIMIT 1`,
         { id: req.params.id },
       );
 
@@ -312,7 +333,7 @@ adminRouter.patch(
          SET account_status = COALESCE(:account_status, account_status),
              onboarding_status = COALESCE(:onboarding_status, onboarding_status),
              is_active = CASE WHEN :account_status = 'active' THEN 1 WHEN :account_status IN ('inactive','suspended') THEN 0 ELSE is_active END
-         WHERE id = :id AND role = 'employee'`,
+         WHERE BINARY id = BINARY :id AND role = 'employee'`,
         {
           id: req.params.id,
           account_status: account_status || null,
@@ -322,7 +343,7 @@ adminRouter.patch(
 
       if (status) {
         await pool.execute(
-          `UPDATE employee_onboarding SET onboarding_status = :status WHERE user_id = :id`,
+          `UPDATE employee_onboarding SET onboarding_status = :status WHERE BINARY user_id = BINARY :id`,
           { id: req.params.id, status },
         );
       }
@@ -330,8 +351,8 @@ adminRouter.patch(
       const [[row]] = await pool.execute(
         `SELECT up.*, eo.employee_code, eo.username, eo.onboarding_status AS eo_status
          FROM user_profiles up
-         LEFT JOIN employee_onboarding eo ON eo.user_id = up.id
-         WHERE up.id = :id AND up.role = 'employee' LIMIT 1`,
+         LEFT JOIN employee_onboarding eo ON BINARY eo.user_id = BINARY up.id
+         WHERE BINARY up.id = BINARY :id AND up.role = 'employee' LIMIT 1`,
         { id: req.params.id },
       );
 
@@ -353,7 +374,7 @@ function mapCustomerRow(row) {
     id: row.id,
     customerCode: row.customer_code,
     fullName: row.full_name,
-    email: row.email,
+    email: row.display_email || row.email,
     phone: row.phone,
     accountStatus: row.account_status,
     isActive: Boolean(row.is_active),
@@ -374,8 +395,23 @@ adminRouter.get(
       const search = req.query.search?.trim();
       let sql = `
         SELECT up.*,
+               CASE
+                 WHEN up.email LIKE '%@rfincare.customer' OR up.email LIKE '%@oauth.rfincare.local'
+                 THEN COALESCE(reg.latest_email, lead.latest_email, up.email)
+                 ELSE up.email
+               END AS display_email,
                (SELECT COUNT(*) FROM loan_applications la WHERE la.customer_id = up.id) AS application_count
         FROM user_profiles up
+        LEFT JOIN (
+          SELECT phone, MAX(email) AS latest_email
+          FROM customer_registrations
+          GROUP BY phone
+        ) reg ON reg.phone = up.phone
+        LEFT JOIN (
+          SELECT phone, MAX(email) AS latest_email
+          FROM marketing_leads
+          GROUP BY phone
+        ) lead ON lead.phone = up.phone
         WHERE up.role = 'customer'`;
       const params = {};
       if (search) {
@@ -439,8 +475,24 @@ adminRouter.patch(
 
       const [[row]] = await pool.execute(
         `SELECT up.*,
+                CASE
+                  WHEN up.email LIKE '%@rfincare.customer' OR up.email LIKE '%@oauth.rfincare.local'
+                  THEN COALESCE(reg.latest_email, lead.latest_email, up.email)
+                  ELSE up.email
+                END AS display_email,
                 (SELECT COUNT(*) FROM loan_applications la WHERE la.customer_id = up.id) AS application_count
-         FROM user_profiles up WHERE up.id = :id LIMIT 1`,
+         FROM user_profiles up
+         LEFT JOIN (
+           SELECT phone, MAX(email) AS latest_email
+           FROM customer_registrations
+           GROUP BY phone
+         ) reg ON reg.phone = up.phone
+         LEFT JOIN (
+           SELECT phone, MAX(email) AS latest_email
+           FROM marketing_leads
+           GROUP BY phone
+         ) lead ON lead.phone = up.phone
+         WHERE up.id = :id LIMIT 1`,
         { id: req.params.id },
       );
 
@@ -471,10 +523,7 @@ adminRouter.get(
     try {
       await ensureStaffExtrasSchema();
       const pool = getPool();
-      const [rows] = await pool.execute(
-        `SELECT * FROM agent_commission_config WHERE agent_user_id = :id ORDER BY updated_at DESC`,
-        { id: req.params.id },
-      );
+      const [rows] = await pool.execute(`SELECT * FROM global_commission_config WHERE id = 'default' LIMIT 1`);
       res.json(rows);
     } catch (err) {
       next(err);
@@ -491,23 +540,24 @@ adminRouter.put(
       await ensureStaffExtrasSchema();
       const pool = getPool();
       const body = req.body || {};
-      const id = newId();
-
-      await pool.execute(`DELETE FROM agent_commission_config WHERE agent_user_id = :agentId`, {
-        agentId: req.params.id,
-      });
-
       await pool.execute(
-        `INSERT INTO agent_commission_config (
-           id, agent_user_id, loan_type, commission_type, commission_value,
+        `INSERT INTO global_commission_config (
+           id, loan_type, commission_type, commission_value,
            min_loan_amount, max_loan_amount, effective_from, effective_to, updated_by
          ) VALUES (
-           :id, :agent_user_id, :loan_type, :commission_type, :commission_value,
+           'default', :loan_type, :commission_type, :commission_value,
            :min_loan_amount, :max_loan_amount, :effective_from, :effective_to, :updated_by
-         )`,
+         )
+         ON DUPLICATE KEY UPDATE
+           loan_type = VALUES(loan_type),
+           commission_type = VALUES(commission_type),
+           commission_value = VALUES(commission_value),
+           min_loan_amount = VALUES(min_loan_amount),
+           max_loan_amount = VALUES(max_loan_amount),
+           effective_from = VALUES(effective_from),
+           effective_to = VALUES(effective_to),
+           updated_by = VALUES(updated_by)`,
         {
-          id,
-          agent_user_id: req.params.id,
           loan_type: body.loanType || body.loan_type || null,
           commission_type: body.commissionType || body.commission_type || 'percentage',
           commission_value: body.commissionValue ?? body.commission_value ?? 2.5,
@@ -522,12 +572,68 @@ adminRouter.put(
       await writeAuditLog({
         userId: req.auth.userId,
         actionType: 'UPDATE',
-        tableName: 'agent_commission_config',
-        recordId: req.params.id,
+        tableName: 'global_commission_config',
+        recordId: 'default',
         newValues: body,
       });
 
       res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+adminRouter.get(
+  '/commission/circulars',
+  authenticate,
+  authorize({ resource: 'agents', action: 'read' }),
+  async (_req, res, next) => {
+    try {
+      await ensureStaffExtrasSchema();
+      const pool = getPool();
+      const [rows] = await pool.execute(
+        `SELECT id, title, description, file_name, file_url, is_active, created_at
+         FROM agent_commission_circulars
+         WHERE is_active = 1
+         ORDER BY created_at DESC`,
+      );
+      res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+adminRouter.post(
+  '/commission/circulars',
+  authenticate,
+  authorize({ resource: 'agents', action: 'update' }),
+  circularUpload.single('file'),
+  async (req, res, next) => {
+    try {
+      await ensureStaffExtrasSchema();
+      if (!req.file) return res.status(400).json({ error: 'PDF file is required' });
+      const pool = getPool();
+      const id = newId();
+      const title = req.body?.title?.trim() || req.file.originalname;
+      const description = req.body?.description?.trim() || null;
+      const fileUrl = `/uploads/commission-circulars/${req.file.filename}`;
+      await pool.execute(
+        `INSERT INTO agent_commission_circulars
+         (id, title, description, file_name, file_path, file_url, uploaded_by)
+         VALUES (:id, :title, :description, :file_name, :file_path, :file_url, :uploaded_by)`,
+        {
+          id,
+          title,
+          description,
+          file_name: req.file.originalname,
+          file_path: req.file.path,
+          file_url: fileUrl,
+          uploaded_by: req.auth.userId,
+        },
+      );
+      res.status(201).json({ id, title, description, fileUrl });
     } catch (err) {
       next(err);
     }

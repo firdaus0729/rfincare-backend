@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS document_requirements (
+  id CHAR(36) NOT NULL,
+  bank_id CHAR(36) NULL,
+  product_type VARCHAR(128) NULL,
+  loan_type VARCHAR(64) NULL,
+  document_type VARCHAR(128) NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  subtitle TEXT NULL,
+  allowed_file_types_json JSON NULL,
+  is_required TINYINT(1) NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_by CHAR(36) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_doc_req_bank (bank_id),
+  KEY idx_doc_req_product (product_type),
+  KEY idx_doc_req_loan_type (loan_type),
+  KEY idx_doc_req_doc_type (document_type),
+  KEY idx_doc_req_active (is_active)
+);

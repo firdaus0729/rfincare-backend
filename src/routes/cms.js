@@ -9,6 +9,7 @@ import {
   EMAIL_PROVIDERS,
   getOtpProviderSettings,
   SMS_PROVIDERS,
+  WHATSAPP_PROVIDERS,
   updateOtpProviderSettings,
 } from '../lib/otpProviderSettings.js';
 import { getOAuthAdminPayload, updateOAuthSettings } from '../lib/oauthProviderSettings.js';
@@ -124,9 +125,11 @@ const OAuthSettingsSchema = z.object({
 
 const OtpProviderSettingsSchema = z.object({
   smsProvider: z.enum(SMS_PROVIDERS),
+  whatsappProvider: z.enum(WHATSAPP_PROVIDERS).optional(),
   emailProvider: z.enum(EMAIL_PROVIDERS),
   requireMobileOtp: z.boolean().optional(),
   requireEmailOtp: z.boolean().optional(),
+  requireWhatsappOtp: z.boolean().optional(),
   providerConfig: z
     .object({
       msg91SenderId: z.string().optional(),
