@@ -3,6 +3,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { existsSync } from 'node:fs';
 
 import { errorMiddleware } from './middleware/errorMiddleware.js';
 import { healthRouter } from './routes/health.js';
@@ -98,7 +99,13 @@ export function createApp({ serveStatic = true } = {}) {
     ) {
       return res.status(404).json({ message: 'Not Found' });
     }
-    res.sendFile(path.join(buildPath, 'index.html'));
+    const indexPath = path.join(buildPath, 'index.html');
+    if (!existsSync(indexPath)) {
+      return res.status(404).json({
+        message: 'Frontend build not found. Set FRONTEND_DIST or deploy frontend/dist.',
+      });
+    }
+    res.sendFile(indexPath);
   });
 
   return app;
