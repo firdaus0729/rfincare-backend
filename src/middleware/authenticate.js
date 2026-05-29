@@ -35,6 +35,11 @@ export async function authenticate(req, _res, next) {
     req.auth = { userId: profile.id, role: profile.role, email: profile.email, profile };
     next();
   } catch (err) {
+    if (err?.name === 'TokenExpiredError' || err?.name === 'JsonWebTokenError') {
+      const e = new Error('Unauthorized');
+      e.status = 401;
+      return next(e);
+    }
     next(err);
   }
 }

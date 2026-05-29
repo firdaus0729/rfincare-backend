@@ -125,8 +125,18 @@ async function resolveRequirements({ bankId, productType, loanType }) {
      FROM document_requirements
      WHERE is_active = 1
        AND (bank_id = :bank_id OR bank_id IS NULL)
-       AND (LOWER(COALESCE(product_type, '')) = LOWER(COALESCE(:product_type, '')) OR product_type IS NULL OR product_type = '')
-       AND (LOWER(COALESCE(loan_type, '')) = LOWER(COALESCE(:loan_type, '')) OR loan_type IS NULL OR loan_type = '')
+       AND (
+         LOWER(CONVERT(COALESCE(product_type, '') USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+           = LOWER(CONVERT(COALESCE(:product_type, '') USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+         OR product_type IS NULL
+         OR product_type = ''
+       )
+       AND (
+         LOWER(CONVERT(COALESCE(loan_type, '') USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+           = LOWER(CONVERT(COALESCE(:loan_type, '') USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+         OR loan_type IS NULL
+         OR loan_type = ''
+       )
      ORDER BY
        CASE WHEN bank_id IS NULL THEN 1 ELSE 0 END ASC,
        CASE WHEN product_type IS NULL OR product_type = '' THEN 1 ELSE 0 END ASC,
@@ -161,8 +171,16 @@ documentRequirementsRouter.get(
         `SELECT *
          FROM document_requirements
          WHERE (:bank_id IS NULL OR bank_id = :bank_id)
-           AND (:product_type IS NULL OR LOWER(COALESCE(product_type,'')) = LOWER(:product_type))
-           AND (:loan_type IS NULL OR LOWER(COALESCE(loan_type,'')) = LOWER(:loan_type))
+           AND (
+             :product_type IS NULL
+             OR LOWER(CONVERT(COALESCE(product_type, '') USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+                = LOWER(CONVERT(:product_type USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+           )
+           AND (
+             :loan_type IS NULL
+             OR LOWER(CONVERT(COALESCE(loan_type, '') USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+                = LOWER(CONVERT(:loan_type USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+           )
          ORDER BY sort_order ASC, created_at DESC`,
         {
           bank_id: req.query.bankId || null,

@@ -336,7 +336,11 @@ adminRouter.patch(
         `UPDATE user_profiles
          SET account_status = COALESCE(:account_status, account_status),
              onboarding_status = COALESCE(:onboarding_status, onboarding_status),
-             is_active = CASE WHEN :account_status = 'active' THEN 1 WHEN :account_status IN ('inactive','suspended') THEN 0 ELSE is_active END
+             is_active = CASE
+               WHEN (CONVERT(:account_status USING utf8mb4) COLLATE utf8mb4_unicode_ci) = ('active' COLLATE utf8mb4_unicode_ci) THEN 1
+               WHEN (CONVERT(:account_status USING utf8mb4) COLLATE utf8mb4_unicode_ci) IN (('inactive' COLLATE utf8mb4_unicode_ci), ('suspended' COLLATE utf8mb4_unicode_ci)) THEN 0
+               ELSE is_active
+             END
          WHERE BINARY id = BINARY :id AND role = 'employee'`,
         {
           id: req.params.id,
