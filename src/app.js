@@ -29,6 +29,18 @@ import { interestMatrixRouter } from './routes/interestMatrix.js';
 import { reportsRouter } from './routes/reports.js';
 import { portalDashboardsRouter } from './routes/portalDashboards.js';
 import { documentRequirementsRouter } from './routes/documentRequirements.js';
+import { staffCommunicationRouter } from './routes/staffMessaging.js';
+import { portalAgentApplicationsRouter } from './routes/portalAgentApplications.js';
+import {
+  adminAgentLearningRouter,
+  portalAgentLearningRouter,
+} from './routes/agentLearning.js';
+import {
+  adminEmployeeLearningRouter,
+  portalEmployeeLearningRouter,
+} from './routes/employeeLearning.js';
+import { portalAgentProfileRouter } from './routes/portalAgentProfile.js';
+import { portalEmployeeProfileRouter } from './routes/portalEmployeeProfile.js';
 import { getCorsOptions } from './lib/corsOptions.js';
 
 export function createApp({ serveStatic = true } = {}) {
@@ -70,6 +82,14 @@ export function createApp({ serveStatic = true } = {}) {
   app.use('/reports', reportsRouter);
   app.use('/admin/reports', reportsRouter);
   app.use('/portal', portalDashboardsRouter);
+  app.use('/portal/communication', staffCommunicationRouter);
+  app.use('/portal/agent', portalAgentApplicationsRouter);
+  app.use('/portal/agent/learning', portalAgentLearningRouter);
+  app.use('/portal/agent/profile', portalAgentProfileRouter);
+  app.use('/admin/agent-learning', adminAgentLearningRouter);
+  app.use('/admin/employee-learning', adminEmployeeLearningRouter);
+  app.use('/portal/employee/learning', portalEmployeeLearningRouter);
+  app.use('/portal/employee/profile', portalEmployeeProfileRouter);
   app.use('/document-requirements', documentRequirementsRouter);
   app.use('/admin/document-requirements', documentRequirementsRouter);
 

@@ -21,6 +21,19 @@ function isStaffRole(role) {
   return STAFF_ROLES.has(role) || hasPermission(role, 'read:*');
 }
 
+async function agentCanAccessApplication(pool, agentId, applicationId) {
+  if (!applicationId) return false;
+  const [[row]] = await pool.execute(
+    `SELECT id, customer_id FROM loan_applications WHERE id = :id AND agent_id = :agentId LIMIT 1`,
+    { id: applicationId, agentId },
+  );
+  return row || null;
+}
+
+function isAgentRole(role) {
+  return role === 'agent';
+}
+
 function normalizeDocStatus(row) {
   const raw = row?.verification_status || row?.status || 'pending';
   const s = String(raw).toLowerCase();
@@ -167,7 +180,8 @@ documentsRouter.get(
   authorize({ resource: 'documents', action: 'read' }),
   async (req, res, next) => {
     try {
-      if (!isStaffRole(req.auth.role)) {
+      const isAgent = isAgentRole(req.auth.role);
+      if (!isStaffRole(req.auth.role) && !isAgent) {
         const e = new Error('Insufficient permissions');
         e.status = 403;
         throw e;
@@ -187,21 +201,32 @@ documentsRouter.get(
 
       let searchClause = '';
       if (search) {
+        const phoneDigits = search.replace(/\D/g, '');
         searchClause = `AND (
           la.application_number COLLATE utf8mb4_unicode_ci LIKE CONVERT(:search USING utf8mb4) COLLATE utf8mb4_unicode_ci
+          OR la.id COLLATE utf8mb4_unicode_ci LIKE CONVERT(:search USING utf8mb4) COLLATE utf8mb4_unicode_ci
           OR up.full_name COLLATE utf8mb4_unicode_ci LIKE CONVERT(:search USING utf8mb4) COLLATE utf8mb4_unicode_ci
           OR up.email COLLATE utf8mb4_unicode_ci LIKE CONVERT(:search USING utf8mb4) COLLATE utf8mb4_unicode_ci
           OR up.phone COLLATE utf8mb4_unicode_ci LIKE CONVERT(:search USING utf8mb4) COLLATE utf8mb4_unicode_ci
+          OR REPLACE(REPLACE(REPLACE(up.phone, ' ', ''), '-', ''), '+', '') LIKE :phone_digits
         )`;
         params.search = `%${search}%`;
+        params.phone_digits = `%${phoneDigits || search}%`;
+      }
+
+      const agentClause = isAgent ? 'AND la.agent_id = :agent_id' : '';
+      if (isAgent) {
+        params.agent_id = req.auth.userId;
       }
 
       const [rows] = await pool.execute(
         `SELECT
            la.id AS application_id,
+           la.customer_id,
            la.application_number,
            la.status AS application_status,
            la.created_at AS application_created_at,
+           la.sourced_agent_code,
            up.full_name AS customer_name,
            up.email AS customer_email,
            up.phone AS customer_phone,
@@ -219,9 +244,9 @@ documentsRouter.get(
          FROM loan_applications la
          LEFT JOIN user_profiles up ON up.id = la.customer_id
          LEFT JOIN customer_documents cd ON cd.application_id = la.id
-         WHERE 1=1 ${searchClause}
-         GROUP BY la.id, la.application_number, la.status, la.created_at,
-                  up.full_name, up.email, up.phone
+         WHERE 1=1 ${agentClause} ${searchClause}
+         GROUP BY la.id, la.customer_id, la.application_number, la.status, la.created_at,
+                  la.sourced_agent_code, up.full_name, up.email, up.phone
          ${having}
          ORDER BY la.created_at DESC`,
         params,
@@ -230,7 +255,9 @@ documentsRouter.get(
       res.json(
         rows.map((row) => ({
           application_id: row.application_id,
+          customer_id: row.customer_id,
           application_number: row.application_number,
+          sourced_agent_code: row.sourced_agent_code,
           application_status: row.application_status,
           application_created_at: row.application_created_at,
           customer_name: row.customer_name,
@@ -275,6 +302,19 @@ documentsRouter.get(
           conditions.push('customer_id = :customer_id');
           params.customer_id = req.auth.userId;
         }
+        if (req.auth.role === 'agent') {
+          const appRow = await agentCanAccessApplication(pool, req.auth.userId, applicationId);
+          if (!appRow) {
+            const e = new Error('Insufficient permissions');
+            e.status = 403;
+            throw e;
+          }
+        }
+      } else if (req.auth.role === 'agent') {
+        conditions.push(
+          `application_id IN (SELECT id FROM loan_applications WHERE agent_id = :agent_id)`,
+        );
+        params.agent_id = req.auth.userId;
       } else if (isStaff && customerId) {
         conditions.push('customer_id = :customer_id');
         params.customer_id = customerId;
@@ -324,9 +364,20 @@ documentsRouter.post(
       const docId = newId();
       const pool = getPool();
 
-      const customerId = req.body.customerId || req.auth.userId;
+      let customerId = req.body.customerId || req.auth.userId;
       const applicationId = req.body.applicationId || null;
       const documentType = req.body.documentType || null;
+
+      if (req.auth.role === 'agent') {
+        if (!applicationId) {
+          return res.status(400).json({ error: 'applicationId is required for agent uploads' });
+        }
+        const appRow = await agentCanAccessApplication(pool, req.auth.userId, applicationId);
+        if (!appRow) {
+          return res.status(403).json({ error: 'You can only upload documents for applications you sourced' });
+        }
+        customerId = appRow.customer_id || customerId;
+      }
 
       if (applicationId && documentType) {
         const requirements = await resolveRequirementsForApplication(pool, applicationId);
@@ -403,6 +454,13 @@ documentsRouter.get(
       });
       if (!doc) return res.status(404).json({ error: 'Document not found' });
 
+      if (req.auth.role === 'agent') {
+        const appRow = await agentCanAccessApplication(pool, req.auth.userId, doc.application_id);
+        if (!appRow) {
+          return res.status(403).json({ error: 'Insufficient permissions' });
+        }
+      }
+
       const filename = basename(doc.file_path) || 'document';
       res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -425,7 +483,7 @@ documentsRouter.patch(
   authorize({ resource: 'documents', action: 'update' }),
   async (req, res, next) => {
     try {
-      if (!isStaffRole(req.auth.role)) {
+      if (!isStaffRole(req.auth.role) || isAgentRole(req.auth.role)) {
         const e = new Error('Insufficient permissions');
         e.status = 403;
         throw e;

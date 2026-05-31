@@ -3,6 +3,18 @@ import { Router } from 'express';
 import { getPool } from '../db/pool.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { ensureStaffExtrasSchema } from '../db/ensureStaffExtrasSchema.js';
+import {
+  calculateCommissionFromApplication,
+  commissionStatusForApplication,
+} from '../lib/agentCustomerProvision.js';
+import { getAgentLearningFeed } from './agentLearning.js';
+import { getEmployeeLearningFeed } from './employeeLearning.js';
+import { ensureAgentLearningSchema } from '../db/ensureAgentLearningSchema.js';
+import { ensureAgentProfileSchema } from '../db/ensureAgentProfileSchema.js';
+import {
+  buildAgentPerformanceAnalytics,
+  buildAgentMetricTrends,
+} from '../lib/agentPerformanceAnalytics.js';
 
 export const portalDashboardsRouter = Router();
 
@@ -43,6 +55,7 @@ portalDashboardsRouter.get('/agent/dashboard', authenticate, async (req, res, ne
 
     const pool = getPool();
     const agentId = req.auth.userId;
+    await ensureAgentProfileSchema();
 
     const [[profile]] = await pool.execute(
       `SELECT up.*, ao.agent_code, ao.username
@@ -52,30 +65,63 @@ portalDashboardsRouter.get('/agent/dashboard', authenticate, async (req, res, ne
       { id: agentId },
     );
 
+    const agentCode = profile?.agent_code || null;
     const [apps] = await pool.execute(
       `SELECT la.*, c.full_name AS customer_full_name
        FROM loan_applications la
        LEFT JOIN user_profiles c ON c.id = la.customer_id
        WHERE la.agent_id = :agentId
+          OR (:agentCode IS NOT NULL AND la.sourced_agent_code = :agentCode)
        ORDER BY la.created_at DESC`,
-      { agentId },
+      { agentId, agentCode },
     );
 
     const total = apps.length;
     const approved = apps.filter((a) => a.status === 'approved').length;
     const conversionRate = total > 0 ? Math.round((approved / total) * 100) : 0;
-    const commissionEstimate = approved * 2500;
 
     await ensureStaffExtrasSchema();
-    const [commissions] = await pool.execute(
+    const [[commissionConfig]] = await pool.execute(
       `SELECT * FROM global_commission_config WHERE id = 'default' LIMIT 1`,
     );
+
+    const commissionEntries = apps.map((row) => {
+      const data = typeof row.data === 'string' ? JSON.parse(row.data || '{}') : row.data || {};
+      const amount = calculateCommissionFromApplication(
+        { data: { ...data, requested_loan_amount: data.requested_loan_amount || data.requestedLoanAmount } },
+        commissionConfig,
+      );
+      return {
+        id: row.id,
+        clientName: row.customer_full_name || 'Customer',
+        loanType: data.loan_type_label || data.loan_type || data.loan_purpose || 'Loan',
+        amount,
+        status: commissionStatusForApplication(row.status),
+        applicationStatus: row.status,
+        applicationNumber: row.application_number,
+        sourcedAgentCode: row.sourced_agent_code,
+        date: row.submitted_at || row.updated_at || row.created_at,
+      };
+    });
+
+    const commissionEstimate = commissionEntries
+      .filter((c) => c.status === 'paid')
+      .reduce((sum, c) => sum + c.amount, 0);
+    const pendingCommission = commissionEntries
+      .filter((c) => c.status !== 'paid')
+      .reduce((sum, c) => sum + c.amount, 0);
+    const totalEstCommission = commissionEntries.reduce((sum, c) => sum + (c.amount || 0), 0);
+
+    const trends = buildAgentMetricTrends(apps, commissionEntries);
+    const performanceAnalytics = buildAgentPerformanceAnalytics(apps, commissionEntries);
     const [circulars] = await pool.execute(
       `SELECT id, title, description, file_name, file_url, created_at
        FROM agent_commission_circulars
        WHERE is_active = 1
        ORDER BY created_at DESC`,
     );
+
+    const learningResources = await getAgentLearningFeed(pool, agentId);
 
     res.json({
       profile: {
@@ -84,22 +130,60 @@ portalDashboardsRouter.get('/agent/dashboard', authenticate, async (req, res, ne
         tier: profile?.is_active ? 'Active Agent' : 'Pending',
         totalClients: total,
         activeClients: apps.filter((a) => !['approved', 'rejected'].includes(a.status)).length,
+        avatarUrl: profile?.avatar_url || null,
       },
       metrics: [
-        { id: 1, type: 'customers', label: 'Active Clients', value: String(apps.filter((a) => !['approved', 'rejected'].includes(a.status)).length), subtitle: `Total: ${total} clients` },
-        { id: 2, type: 'conversions', label: 'Conversion Rate', value: `${conversionRate}%`, subtitle: `${approved} of ${total} approved` },
-        { id: 3, type: 'earnings', label: 'Est. Commission', value: `₹${commissionEstimate.toLocaleString('en-IN')}`, subtitle: 'Based on approvals' },
-        { id: 4, type: 'satisfaction', label: 'Status', value: profile?.is_active ? 'Active' : 'Inactive', subtitle: profile?.account_status || '' },
+        {
+          id: 1,
+          type: 'customers',
+          label: 'Active Clients',
+          value: String(trends.activeClients),
+          subtitle: `Total: ${total} clients`,
+          trend: trends.clients.trend,
+          change: trends.clients.change,
+        },
+        {
+          id: 2,
+          type: 'conversions',
+          label: 'Conversion Rate',
+          value: `${conversionRate}%`,
+          subtitle: `${approved} of ${total} approved`,
+          trend: trends.conversions.trend,
+          change: trends.conversions.change,
+        },
+        {
+          id: 3,
+          type: 'earnings',
+          label: 'Est. Commission',
+          value: `₹${commissionEstimate.toLocaleString('en-IN')}`,
+          subtitle:
+            pendingCommission > 0
+              ? `₹${pendingCommission.toLocaleString('en-IN')} pending · ₹${totalEstCommission.toLocaleString('en-IN')} pipeline`
+              : 'Based on approvals',
+          trend: trends.earnings.trend,
+          change: trends.earnings.change,
+        },
+        {
+          id: 4,
+          type: 'satisfaction',
+          label: 'Status',
+          value: profile?.is_active ? 'Active' : 'Inactive',
+          subtitle: profile?.account_status || '',
+          trend: 'up',
+          change: profile?.is_active ? 'Live' : 'Off',
+        },
       ],
       clients: apps.map(mapAppToClient),
-      commissions,
+      commissions: commissionConfig ? [commissionConfig] : [],
+      commissionEntries,
+      commissionSummary: {
+        totalEarned: commissionEstimate,
+        pending: pendingCommission,
+      },
       circulars,
-      weeklyPerformance: [
-        { name: 'W1', clients: Math.ceil(total * 0.2), conversions: Math.ceil(approved * 0.2), earnings: Math.ceil(commissionEstimate * 0.2) },
-        { name: 'W2', clients: Math.ceil(total * 0.25), conversions: Math.ceil(approved * 0.25), earnings: Math.ceil(commissionEstimate * 0.25) },
-        { name: 'W3', clients: Math.ceil(total * 0.25), conversions: Math.ceil(approved * 0.25), earnings: Math.ceil(commissionEstimate * 0.25) },
-        { name: 'W4', clients: Math.ceil(total * 0.3), conversions: Math.ceil(approved * 0.3), earnings: Math.ceil(commissionEstimate * 0.3) },
-      ],
+      learningResources,
+      performanceAnalytics,
+      weeklyPerformance: performanceAnalytics.month,
     });
   } catch (err) {
     next(err);
@@ -116,6 +200,7 @@ portalDashboardsRouter.get('/employee/dashboard', authenticate, async (req, res,
 
     const pool = getPool();
     const employeeId = req.auth.userId;
+    await ensureAgentLearningSchema();
 
     const [apps] = await pool.execute(
       `SELECT la.*, c.full_name AS customer_full_name
@@ -140,6 +225,8 @@ portalDashboardsRouter.get('/employee/dashboard', authenticate, async (req, res,
       { id: employeeId },
     );
 
+    const learningResources = await getEmployeeLearningFeed(pool, employeeId);
+
     res.json({
       stats: {
         assignedApplications: apps.length,
@@ -152,6 +239,7 @@ portalDashboardsRouter.get('/employee/dashboard', authenticate, async (req, res,
           return d.toDateString() === today.toDateString();
         }).length,
       },
+      learningResources,
       applications: apps.map((row) => ({
         ...mapAppToClient(row),
         id: row.id,

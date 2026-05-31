@@ -15,8 +15,18 @@ import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { approvalMatrixRouter } from './approvalMatrixRules.js';
 import { statusCheckAdminRouter } from './statusCheckAdmin.js';
+import { adminHierarchyRouter } from './staffMessaging.js';
+import {
+  fetchAgentDetail,
+  fetchEmployeeDetail,
+  updateAgentDetails,
+  updateEmployeeDetails,
+  resetStaffPassword,
+} from '../lib/adminStaffManage.js';
 
 export const adminRouter = Router();
+
+adminRouter.use('/hierarchy', adminHierarchyRouter);
 
 const uploadRoot = process.env.UPLOAD_DIR || './uploads';
 const circularDir = resolve(uploadRoot, 'commission-circulars');
@@ -265,56 +275,79 @@ adminRouter.post(
   },
 );
 
+adminRouter.get(
+  '/agents/:id',
+  authenticate,
+  authorize({ resource: 'agents', action: 'read' }),
+  async (req, res, next) => {
+    try {
+      const detail = await fetchAgentDetail(req.params.id);
+      res.json(detail);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 adminRouter.patch(
   '/agents/:id',
   authenticate,
   authorize({ resource: 'agents', action: 'update' }),
   async (req, res, next) => {
     try {
-      await ensureOnboardingSchema();
-      const pool = getPool();
-      const { account_status, onboarding_status } = req.body;
-      const status = onboarding_status || account_status;
+      const detail = await updateAgentDetails(req.params.id, req.body);
+      await writeAuditLog({
+        userId: req.auth.userId,
+        actionType: 'update',
+        tableName: 'agent_onboarding',
+        recordId: req.params.id,
+        newValues: { scope: 'admin_agent_update' },
+      });
+      res.json(detail);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
-      await pool.execute(
-        `UPDATE user_profiles
-         SET account_status = COALESCE(:account_status, account_status),
-             onboarding_status = COALESCE(:onboarding_status, onboarding_status),
-             is_active = CASE
-               WHEN (CONVERT(:account_status USING utf8mb4) COLLATE utf8mb4_unicode_ci) = ('active' COLLATE utf8mb4_unicode_ci) THEN 1
-               WHEN (CONVERT(:account_status USING utf8mb4) COLLATE utf8mb4_unicode_ci) IN (('inactive' COLLATE utf8mb4_unicode_ci), ('suspended' COLLATE utf8mb4_unicode_ci)) THEN 0
-               ELSE is_active
-             END
-         WHERE BINARY id = BINARY :id AND role = 'agent'`,
-        {
-          id: req.params.id,
-          account_status: account_status || null,
-          onboarding_status: onboarding_status || null,
-        },
-      );
+adminRouter.post(
+  '/agents/:id/reset-password',
+  authenticate,
+  authorize({ resource: 'agents', action: 'update' }),
+  async (req, res, next) => {
+    try {
+      const { password, notifyEmail } = req.body || {};
+      const detail = await fetchAgentDetail(req.params.id);
+      await resetStaffPassword({
+        userId: req.params.id,
+        password,
+        role: 'agent',
+        fullName: detail.agentName,
+        email: detail.email,
+        notifyEmail: Boolean(notifyEmail),
+      });
+      await writeAuditLog({
+        userId: req.auth.userId,
+        actionType: 'update',
+        tableName: 'auth_users',
+        recordId: req.params.id,
+        newValues: { scope: 'admin_agent_password_reset' },
+      });
+      res.json({ success: true, message: 'Agent password updated' });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
-      if (status) {
-        await pool.execute(
-          `UPDATE agent_onboarding SET onboarding_status = :status WHERE BINARY user_id = BINARY :id`,
-          { id: req.params.id, status },
-        );
-      }
-
-      const [[row]] = await pool.execute(
-        `SELECT up.*, ao.agent_code, ao.username, ao.onboarding_status AS ao_status
-         FROM user_profiles up
-         LEFT JOIN agent_onboarding ao ON BINARY ao.user_id = BINARY up.id
-         WHERE BINARY up.id = BINARY :id AND up.role = 'agent' LIMIT 1`,
-        { id: req.params.id },
-      );
-
-      if (!row) {
-        const e = new Error('Agent not found');
-        e.status = 404;
-        throw e;
-      }
-
-      res.json(mapAgentProfile(row));
+adminRouter.get(
+  '/employees/:id',
+  authenticate,
+  authorize({ resource: 'employees', action: 'read' }),
+  async (req, res, next) => {
+    try {
+      const detail = await fetchEmployeeDetail(req.params.id);
+      res.json(detail);
     } catch (err) {
       next(err);
     }
@@ -327,50 +360,45 @@ adminRouter.patch(
   authorize({ resource: 'employees', action: 'update' }),
   async (req, res, next) => {
     try {
-      await ensureOnboardingSchema();
-      const pool = getPool();
-      const { account_status, onboarding_status } = req.body;
-      const status = onboarding_status || account_status;
+      const detail = await updateEmployeeDetails(req.params.id, req.body);
+      await writeAuditLog({
+        userId: req.auth.userId,
+        actionType: 'update',
+        tableName: 'employee_onboarding',
+        recordId: req.params.id,
+        newValues: { scope: 'admin_employee_update' },
+      });
+      res.json(detail);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
-      await pool.execute(
-        `UPDATE user_profiles
-         SET account_status = COALESCE(:account_status, account_status),
-             onboarding_status = COALESCE(:onboarding_status, onboarding_status),
-             is_active = CASE
-               WHEN (CONVERT(:account_status USING utf8mb4) COLLATE utf8mb4_unicode_ci) = ('active' COLLATE utf8mb4_unicode_ci) THEN 1
-               WHEN (CONVERT(:account_status USING utf8mb4) COLLATE utf8mb4_unicode_ci) IN (('inactive' COLLATE utf8mb4_unicode_ci), ('suspended' COLLATE utf8mb4_unicode_ci)) THEN 0
-               ELSE is_active
-             END
-         WHERE BINARY id = BINARY :id AND role = 'employee'`,
-        {
-          id: req.params.id,
-          account_status: account_status || null,
-          onboarding_status: onboarding_status || null,
-        },
-      );
-
-      if (status) {
-        await pool.execute(
-          `UPDATE employee_onboarding SET onboarding_status = :status WHERE BINARY user_id = BINARY :id`,
-          { id: req.params.id, status },
-        );
-      }
-
-      const [[row]] = await pool.execute(
-        `SELECT up.*, eo.employee_code, eo.username, eo.onboarding_status AS eo_status
-         FROM user_profiles up
-         LEFT JOIN employee_onboarding eo ON BINARY eo.user_id = BINARY up.id
-         WHERE BINARY up.id = BINARY :id AND up.role = 'employee' LIMIT 1`,
-        { id: req.params.id },
-      );
-
-      if (!row) {
-        const e = new Error('Employee not found');
-        e.status = 404;
-        throw e;
-      }
-
-      res.json(mapEmployeeProfile(row));
+adminRouter.post(
+  '/employees/:id/reset-password',
+  authenticate,
+  authorize({ resource: 'employees', action: 'update' }),
+  async (req, res, next) => {
+    try {
+      const { password, notifyEmail } = req.body || {};
+      const detail = await fetchEmployeeDetail(req.params.id);
+      await resetStaffPassword({
+        userId: req.params.id,
+        password,
+        role: 'employee',
+        fullName: detail.employeeName,
+        email: detail.email,
+        notifyEmail: Boolean(notifyEmail),
+      });
+      await writeAuditLog({
+        userId: req.auth.userId,
+        actionType: 'update',
+        tableName: 'auth_users',
+        recordId: req.params.id,
+        newValues: { scope: 'admin_employee_password_reset' },
+      });
+      res.json({ success: true, message: 'Employee password updated' });
     } catch (err) {
       next(err);
     }

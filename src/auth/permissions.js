@@ -25,6 +25,8 @@ export const PERMISSIONS = {
     'read:assigned_customers',
     'read:assigned_loan_applications',
     'update:assigned_loan_applications',
+    'read:documents',
+    'update:documents',
     'read:banks',
     'read:bank_products',
     'read:commission_tracker',
