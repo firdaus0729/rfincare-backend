@@ -11,6 +11,7 @@ import { getAgentLearningFeed } from './agentLearning.js';
 import { getEmployeeLearningFeed } from './employeeLearning.js';
 import { ensureAgentLearningSchema } from '../db/ensureAgentLearningSchema.js';
 import { ensureAgentProfileSchema } from '../db/ensureAgentProfileSchema.js';
+import { ensureAgentCodeForUser } from '../lib/agentCode.js';
 import {
   buildAgentPerformanceAnalytics,
   buildAgentMetricTrends,
@@ -65,7 +66,8 @@ portalDashboardsRouter.get('/agent/dashboard', authenticate, async (req, res, ne
       { id: agentId },
     );
 
-    const agentCode = profile?.agent_code || null;
+    const agentCode =
+      (await ensureAgentCodeForUser(pool, agentId)) || profile?.agent_code || null;
     const [apps] = await pool.execute(
       `SELECT la.*, c.full_name AS customer_full_name
        FROM loan_applications la
@@ -126,7 +128,7 @@ portalDashboardsRouter.get('/agent/dashboard', authenticate, async (req, res, ne
     res.json({
       profile: {
         name: profile?.full_name || 'Agent',
-        agentId: profile?.agent_code || profile?.id?.slice(0, 8),
+        agentId: agentCode || '—',
         tier: profile?.is_active ? 'Active Agent' : 'Pending',
         totalClients: total,
         activeClients: apps.filter((a) => !['approved', 'rejected'].includes(a.status)).length,

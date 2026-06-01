@@ -5,6 +5,8 @@ import { getPool } from '../db/pool.js';
 import { ensureOnboardingSchema } from '../db/ensureOnboardingSchema.js';
 import { newId } from './ids.js';
 import { sendStaffWelcomeEmail } from './email.js';
+import { reserveUniqueAgentCode } from './agentCode.js';
+import { ensureMilestone4Schema } from '../db/ensureMilestone4Schema.js';
 
 const baseStaffFields = {
   username: z.string().min(3).max(128),
@@ -20,7 +22,7 @@ export const CreateAgentSchema = z
   .object({
     ...baseStaffFields,
     agentName: z.string().min(1),
-    agentCode: z.string().min(1).max(64),
+    agentCode: z.string().min(1).max(64).optional(),
   })
   .passthrough();
 
@@ -50,11 +52,14 @@ function normalizeBody(body = {}) {
 
 export async function createAgentAccount(input, createdByUserId) {
   await ensureOnboardingSchema();
+  await ensureMilestone4Schema();
   const data = CreateAgentSchema.parse(normalizeBody(input));
   const pool = getPool();
   const userId = newId();
   const onboardingId = newId();
   const passwordHash = await bcrypt.hash(data.password, 12);
+  const agentCode =
+    data.agentCode?.trim() || (await reserveUniqueAgentCode(pool));
 
   const conn = await pool.getConnection();
   try {
@@ -82,17 +87,17 @@ export async function createAgentAccount(input, createdByUserId) {
     await conn.execute(
       `INSERT INTO agent_onboarding (
          id, user_id, username, agent_name, agent_code, email, mobile_number,
-         account_number, bank_name, ifsc_code, onboarding_status, created_by
+         account_number, bank_name, ifsc_code, onboarding_status, qc_status, created_by
        ) VALUES (
          :id, :user_id, :username, :agent_name, :agent_code, :email, :mobile_number,
-         :account_number, :bank_name, :ifsc_code, 'pending', :created_by
+         :account_number, :bank_name, :ifsc_code, 'pending', 'pending_qc', :created_by
        )`,
       {
         id: onboardingId,
         user_id: userId,
         username: data.username,
         agent_name: data.agentName,
-        agent_code: data.agentCode,
+        agent_code: agentCode,
         email: data.email,
         mobile_number: data.mobileNumber,
         account_number: data.accountNumber,

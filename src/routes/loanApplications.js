@@ -10,6 +10,9 @@ import { authorize } from '../middleware/authorize.js';
 import { hasPermission } from '../auth/permissions.js';
 import { createCustomerNotification } from './notifications.js';
 import { writeAuditLog } from '../lib/audit.js';
+import { requireSuccessfulCibilForSubmit } from '../lib/cibilService.js';
+import { dispatchFileUpdateNotification } from '../lib/fileNotificationService.js';
+import { buildSimpleTextPdf } from '../lib/simplePdf.js';
 
 export const loanApplicationsRouter = Router();
 
@@ -184,6 +187,12 @@ function formatApplication(row) {
     eligibility_status: row.eligibility_status,
     rejection_reason: row.rejection_reason,
     submitted_at: row.submitted_at,
+    journey_mode: row.journey_mode || 'assessment',
+    cibil_status: row.cibil_status || null,
+    cibil_checked_at: row.cibil_checked_at || null,
+    disbursed_amount: row.disbursed_amount,
+    disbursed_at: row.disbursed_at,
+    commission_status: row.commission_status,
     reviewed_by: row.reviewed_by,
     reviewed_at: row.reviewed_at,
     qc_updated_at: row.qc_updated_at || null,
@@ -784,12 +793,65 @@ loanApplicationsRouter.patch(
       }
 
       const row = await fetchApplicationById(pool, req.params.id);
+
+      if (
+        (document_stage_status || bank_approval_status)
+        && existing.status === 'submitted'
+        && existing.submitted_at
+      ) {
+        dispatchFileUpdateNotification('application_stage_after_bank', {
+          applicationId: req.params.id,
+          extra: {
+            title: 'Application stage updated',
+            message: `Bank processing stage is now ${bank_approval_status || document_stage_status}.`,
+          },
+        }).catch(() => {});
+      }
+
       res.json(formatApplication(row));
     } catch (err) {
       next(err);
     }
   },
 );
+
+loanApplicationsRouter.get('/:id/summary-pdf', authenticate, async (req, res, next) => {
+  try {
+    const pool = getPool();
+    const row = await fetchApplicationById(pool, req.params.id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+
+    const isOwner = row.customer_id === req.auth.userId;
+    const isStaff = STAFF_ROLES.has(req.auth.role);
+    if (!isOwner && !isStaff) return res.status(403).json({ error: 'Forbidden' });
+
+    const data = parseJson(row.data);
+    const lines = [
+      'Rfincare — Loan Application Summary (Read-only)',
+      `Application: ${row.application_number || row.id}`,
+      `Status: ${row.status}`,
+      `Submitted: ${row.submitted_at || '—'}`,
+      '',
+      'NON-EDITABLE FINAL SUBMITTED DETAILS',
+      'For changes contact our helpline or write to support@rfincare.com',
+      '',
+      `Name: ${data.firstName || ''} ${data.lastName || ''}`.trim(),
+      `Email: ${data.email || row.customer_email || '—'}`,
+      `Phone: ${data.phone || data.mobile || '—'}`,
+      `Loan type: ${data.loan_type || data.loan_purpose || '—'}`,
+      `Amount: ${data.loan_amount || data.requested_loan_amount || '—'}`,
+    ];
+    const pdf = buildSimpleTextPdf(lines);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="application-${row.application_number || row.id}.pdf"`,
+    );
+    res.send(pdf);
+  } catch (err) {
+    next(err);
+  }
+});
 
 loanApplicationsRouter.post(
   '/:id/submit',
@@ -812,9 +874,23 @@ loanApplicationsRouter.post(
 
       const selectedBankId = req.body?.selected_bank_id || req.body?.selectedBankId || null;
 
+      try {
+        await requireSuccessfulCibilForSubmit(req.params.id);
+      } catch (cibilErr) {
+        if (cibilErr.status === 422) {
+          return res.status(422).json({
+            error: cibilErr.message,
+            cibilStatus: cibilErr.cibilStatus || 'failed',
+            manualReview: true,
+          });
+        }
+        throw cibilErr;
+      }
+
       await pool.execute(
         `UPDATE loan_applications
          SET status = 'submitted',
+             journey_mode = 'document_only',
              document_stage_status = COALESCE(document_stage_status, 'documents_pending'),
              bank_approval_status = 'submitted_to_bank',
              submitted_at = NOW(3),

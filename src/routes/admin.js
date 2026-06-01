@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { getPool } from '../db/pool.js';
 import { ensureOnboardingSchema } from '../db/ensureOnboardingSchema.js';
 import { createAgentAccount, createEmployeeAccount } from '../lib/staffOnboarding.js';
+import { backfillMissingAgentCodes } from '../lib/agentCode.js';
 import { ensureMilestone3Schema } from '../db/ensureMilestone3Schema.js';
 import { assignUniqueCustomerCode } from '../lib/customerCode.js';
 import { writeAuditLog } from '../lib/audit.js';
@@ -52,9 +53,7 @@ adminRouter.use('/status-check', statusCheckAdminRouter);
 adminRouter.use('/approval-matrix-rules', approvalMatrixRouter);
 
 function mapAgentProfile(row) {
-  const agentCode =
-    row.agent_code ||
-    (row.id ? `AGT-${String(row.id).slice(0, 8).toUpperCase()}` : 'N/A');
+  const agentCode = row.agent_code || null;
   return {
     id: row.id,
     email: row.email,
@@ -143,6 +142,7 @@ adminRouter.get(
     try {
       await ensureOnboardingSchema();
       const pool = getPool();
+      await backfillMissingAgentCodes(pool);
 
       const [employees] = await pool.execute(
         `SELECT up.id, up.full_name, up.email, up.account_status, up.onboarding_status,
@@ -165,7 +165,7 @@ adminRouter.get(
       const mapStaff = (row, role) => {
         const code =
           role === 'agent'
-            ? row.agent_code || `AGT-${String(row.id).slice(0, 8).toUpperCase()}`
+            ? row.agent_code || '—'
             : row.employee_code || `EMP-${String(row.id).slice(0, 8).toUpperCase()}`;
         const name = row.full_name || row.email || 'Staff';
         return {
@@ -202,6 +202,7 @@ adminRouter.get(
     try {
       const pool = getPool();
       await ensureOnboardingSchema();
+      await backfillMissingAgentCodes(pool);
       const [rows] = await pool.execute(
         `SELECT up.*,
                 ao.agent_code,
@@ -215,7 +216,14 @@ adminRouter.get(
          WHERE up.role = 'agent'
          ORDER BY up.created_at DESC`,
       );
-      res.json(rows.map(mapAgentProfile));
+      res.json(
+        rows.map((row) =>
+          mapAgentProfile({
+            ...row,
+            agent_code: row.agent_code || null,
+          }),
+        ),
+      );
     } catch (err) {
       next(err);
     }

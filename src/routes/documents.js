@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
-import { resolve, basename } from 'node:path';
+import { basename } from 'node:path';
 import { createReadStream } from 'node:fs';
+import { getUploadDir, resolveUploadFilePath } from '../lib/uploadPaths.js';
 
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
@@ -12,6 +13,8 @@ import { ensureDocumentSchema } from '../db/ensureDocumentSchema.js';
 import { ensureDocumentRequirementsSchema } from '../db/ensureDocumentRequirementsSchema.js';
 import { newId } from '../lib/ids.js';
 import { writeAuditLog } from '../lib/audit.js';
+import { dispatchFileUpdateNotification } from '../lib/fileNotificationService.js';
+import { createCustomerNotification } from './notifications.js';
 
 export const documentsRouter = Router();
 
@@ -164,9 +167,8 @@ async function resolveRequirementsForApplication(pool, applicationId) {
   return Array.from(chosenByType.values());
 }
 
-const uploadDir = process.env.UPLOAD_DIR || './uploads';
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, resolve(uploadDir)),
+  destination: (_req, _file, cb) => cb(null, getUploadDir()),
   filename: (_req, file, cb) => {
     const safe = `${Date.now()}-${Math.random().toString(36).slice(2)}-${file.originalname}`;
     cb(null, safe);
@@ -424,6 +426,17 @@ documentsRouter.post(
       );
 
       const [[doc]] = await pool.execute(`SELECT * FROM customer_documents WHERE id = :id`, { id: docId });
+
+      if (applicationId) {
+        dispatchFileUpdateNotification('customer_document_upload', {
+          applicationId,
+          extra: {
+            title: 'New document uploaded',
+            message: `Customer uploaded ${documentType || file.originalname} for review.`,
+          },
+        }).catch(() => {});
+      }
+
       res.status(201).json(formatDocumentRow(doc));
     } catch (err) {
       next(err);
@@ -461,10 +474,19 @@ documentsRouter.get(
         }
       }
 
-      const filename = basename(doc.file_path) || 'document';
+      const resolvedPath = resolveUploadFilePath(doc.file_path);
+      if (!resolvedPath) {
+        return res.status(404).json({ error: 'Document file not found on server' });
+      }
+
+      const filename = basename(resolvedPath) || doc.document_name || 'document';
+      const inline = req.query.inline === '1' || req.query.inline === 'true';
       res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      createReadStream(doc.file_path).pipe(res);
+      res.setHeader(
+        'Content-Disposition',
+        `${inline ? 'inline' : 'attachment'}; filename="${filename.replace(/"/g, '')}"`,
+      );
+      createReadStream(resolvedPath).pipe(res);
     } catch (err) {
       next(err);
     }
@@ -535,6 +557,26 @@ documentsRouter.patch(
           verified_at: new Date().toISOString(),
         },
       });
+
+      if (existing.application_id) {
+        dispatchFileUpdateNotification('employee_document_decision', {
+          applicationId: existing.application_id,
+          extra: {
+            title: `Document ${input.status}`,
+            message: `Your ${existing.document_type || 'document'} was ${input.status} by our team.`,
+          },
+        }).catch(() => {});
+
+        try {
+          await createCustomerNotification(getPool(), {
+            customerId: existing.customer_id,
+            title: `Document ${input.status}`,
+            message: `Document "${existing.document_name}" has been ${input.status}.`,
+          });
+        } catch {
+          /* ignore */
+        }
+      }
 
       res.json(formatDocumentRow(row));
     } catch (err) {

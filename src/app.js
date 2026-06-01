@@ -41,7 +41,12 @@ import {
 } from './routes/employeeLearning.js';
 import { portalAgentProfileRouter } from './routes/portalAgentProfile.js';
 import { portalEmployeeProfileRouter } from './routes/portalEmployeeProfile.js';
+import { portalAdminProfileRouter } from './routes/portalAdminProfile.js';
+import { milestone4AdminRouter } from './routes/milestone4Admin.js';
+import { portalEmployeeMilestone4Router } from './routes/portalEmployeeMilestone4.js';
+import { portalAgentMilestone4Router } from './routes/portalAgentMilestone4.js';
 import { getCorsOptions } from './lib/corsOptions.js';
+import { getUploadDir } from './lib/uploadPaths.js';
 
 export function createApp({ serveStatic = true } = {}) {
   const __filename = fileURLToPath(import.meta.url);
@@ -90,13 +95,14 @@ export function createApp({ serveStatic = true } = {}) {
   app.use('/admin/employee-learning', adminEmployeeLearningRouter);
   app.use('/portal/employee/learning', portalEmployeeLearningRouter);
   app.use('/portal/employee/profile', portalEmployeeProfileRouter);
+  app.use('/portal/admin/profile', portalAdminProfileRouter);
+  app.use('/admin/milestone4', milestone4AdminRouter);
+  app.use('/portal/employee/milestone4', portalEmployeeMilestone4Router);
+  app.use('/portal/agent/reports', portalAgentMilestone4Router);
   app.use('/document-requirements', documentRequirementsRouter);
   app.use('/admin/document-requirements', documentRequirementsRouter);
 
-  const uploadDir = process.env.UPLOAD_DIR
-    ? path.resolve(process.env.UPLOAD_DIR)
-    : path.resolve(__dirname, '../uploads');
-  app.use('/uploads', express.static(uploadDir));
+  app.use('/uploads', express.static(getUploadDir()));
 
   app.use(errorMiddleware);
 

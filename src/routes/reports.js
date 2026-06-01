@@ -6,42 +6,91 @@ import { ensureMilestone3Schema } from '../db/ensureMilestone3Schema.js';
 import { newId } from '../lib/ids.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
+import { generateReportSection } from '../lib/reportGenerators.js';
+import { buildMasterReport } from '../lib/masterReport.js';
 
 export const reportsRouter = Router();
 
+function formatSqlDateTime(date) {
+  return date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
 function dateRangeFromQuery(query) {
   const now = new Date();
-  let start;
-  let end = new Date(now);
-  end.setHours(23, 59, 59, 999);
 
   if (query.startDate && query.endDate) {
-    start = new Date(query.startDate);
-    end = new Date(query.endDate);
-    end.setHours(23, 59, 59, 999);
-  } else {
-    const range = query.dateRange || 'last30days';
-    start = new Date(now);
-    if (range === 'last7days') start.setDate(start.getDate() - 7);
-    else if (range === 'last90days') start.setDate(start.getDate() - 90);
-    else if (range === 'last365days') start.setDate(start.getDate() - 365);
-    else start.setDate(start.getDate() - 30);
+    const start = new Date(query.startDate);
+    const end = new Date(query.endDate);
     start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+    return { start: formatSqlDateTime(start), end: formatSqlDateTime(end) };
   }
 
-  return {
-    start: start.toISOString().slice(0, 19).replace('T', ' '),
-    end: end.toISOString().slice(0, 19).replace('T', ' '),
-  };
+  let end = new Date(now);
+  let start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  end.setHours(23, 59, 59, 999);
+
+  const range = query.dateRange || 'last30days';
+
+  switch (range) {
+    case 'today':
+      break;
+    case 'yesterday':
+      start.setDate(start.getDate() - 1);
+      end.setDate(end.getDate() - 1);
+      break;
+    case 'last7days':
+      start.setDate(start.getDate() - 6);
+      break;
+    case 'last30days':
+      start.setDate(start.getDate() - 29);
+      break;
+    case 'last90days':
+      start.setDate(start.getDate() - 89);
+      break;
+    case 'last365days':
+      start.setDate(start.getDate() - 364);
+      break;
+    case 'thisMonth':
+      start = new Date(now.getFullYear(), now.getMonth(), 1);
+      break;
+    case 'lastMonth':
+      start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      break;
+    case 'thisQuarter': {
+      const quarterStartMonth = Math.floor(now.getMonth() / 3) * 3;
+      start = new Date(now.getFullYear(), quarterStartMonth, 1);
+      break;
+    }
+    case 'thisYear':
+      start = new Date(now.getFullYear(), 0, 1);
+      break;
+    default:
+      start.setDate(start.getDate() - 29);
+      break;
+  }
+
+  return { start: formatSqlDateTime(start), end: formatSqlDateTime(end) };
 }
 
 const REPORT_META = [
   { key: 'application_volume', name: 'Application Volume Report', category: 'application' },
-  { key: 'agent_performance', name: 'Agent Performance Dashboard', category: 'agent' },
+  {
+    key: 'agent_performance',
+    name: 'Agent Performance Dashboard Report',
+    category: 'agent',
+  },
   { key: 'financial_summary', name: 'Financial Summary Report', category: 'financial' },
   { key: 'compliance_audit', name: 'Compliance Audit Report', category: 'compliance' },
   { key: 'customer_analytics', name: 'Customer Analytics Report', category: 'customer' },
   { key: 'bank_partnership', name: 'Bank Partnership Report', category: 'financial' },
+  {
+    key: 'master',
+    name: 'Master Report (All Sections)',
+    category: 'application',
+  },
 ];
 
 reportsRouter.get(
@@ -314,126 +363,22 @@ reportsRouter.get(
       const { start, end } = dateRangeFromQuery(req.query);
       const params = { start, end };
 
-      let rows = [];
-      let columns = [];
-
-      switch (reportKey) {
-        case 'application_volume':
-          columns = [
-            'application_id',
-            'application_number',
-            'customer_name',
-            'customer_mobile',
-            'customer_email',
-            'agent_code',
-            'status',
-            'document_stage_status',
-            'bank_approval_status',
-            'created_at',
-          ];
-          [rows] = await pool.execute(
-            `SELECT
-                la.id AS application_id,
-                la.application_number,
-                COALESCE(up.full_name, '') AS customer_name,
-                COALESCE(up.phone, '') AS customer_mobile,
-                up.email AS customer_email,
-                la.status,
-                COALESCE(la.sourced_agent_code, ao.agent_code, '') AS agent_code,
-                la.document_stage_status,
-                la.bank_approval_status,
-                la.created_at
-             FROM loan_applications la
-             JOIN user_profiles up ON up.id = la.customer_id
-             LEFT JOIN agent_onboarding ao ON ao.user_id = la.agent_id
-             WHERE la.created_at BETWEEN :start AND :end
-             ORDER BY la.created_at DESC`,
-            params,
-          );
-          break;
-        case 'agent_performance':
-          columns = [
-            'agent_name',
-            'agent_code',
-            'customer_ids',
-            'applications',
-            'total_application_approved',
-            'approved',
-            'success_rate',
-          ];
-          [rows] = await pool.execute(
-            `SELECT up.full_name AS agent_name,
-                    COALESCE(
-                      ao.agent_code,
-                      MAX(NULLIF(la.sourced_agent_code, '')),
-                      CONCAT('AGT-', UPPER(SUBSTRING(up.id, 1, 8)))
-                    ) AS agent_code,
-                    COALESCE(GROUP_CONCAT(DISTINCT la.customer_id ORDER BY la.created_at DESC SEPARATOR ', '), '') AS customer_ids,
-                    COUNT(la.id) AS applications,
-                    SUM(CASE WHEN la.status = 'approved' THEN 1 ELSE 0 END) AS total_application_approved,
-                    SUM(CASE WHEN la.status = 'approved' THEN 1 ELSE 0 END) AS approved,
-                    ROUND(100 * SUM(CASE WHEN la.status = 'approved' THEN 1 ELSE 0 END) / NULLIF(COUNT(la.id), 0), 1) AS success_rate
-             FROM user_profiles up
-             LEFT JOIN agent_onboarding ao ON ao.user_id = up.id
-             LEFT JOIN loan_applications la ON la.agent_id = up.id AND la.created_at BETWEEN :start AND :end
-             WHERE up.role = 'agent'
-             GROUP BY up.id, up.full_name, ao.agent_code`,
-            params,
-          );
-          break;
-        case 'financial_summary':
-          columns = ['loan_type', 'count', 'approved_count'];
-          [rows] = await pool.execute(
-            `SELECT COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data, '$.loan_type')), 'unknown') AS loan_type,
-                    COUNT(*) AS count,
-                    SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved_count
-             FROM loan_applications
-             WHERE created_at BETWEEN :start AND :end
-             GROUP BY loan_type`,
-            params,
-          );
-          break;
-        case 'compliance_audit':
-          columns = ['action_type', 'table_name', 'record_id', 'user_id', 'created_at'];
-          [rows] = await pool.execute(
-            `SELECT action_type, table_name, record_id, user_id, created_at
-             FROM audit_logs
-             WHERE created_at BETWEEN :start AND :end
-             ORDER BY created_at DESC
-             LIMIT 5000`,
-            params,
-          );
-          break;
-        case 'customer_analytics':
-          columns = ['customer_code', 'full_name', 'email', 'is_active', 'account_status', 'created_at'];
-          [rows] = await pool.execute(
-            `SELECT customer_code, full_name, email, is_active, account_status, created_at
-             FROM user_profiles
-             WHERE role = 'customer' AND created_at BETWEEN :start AND :end
-             ORDER BY created_at DESC`,
-            params,
-          );
-          break;
-        case 'bank_partnership':
-          columns = ['bank_name', 'status', 'applications', 'approved'];
-          [rows] = await pool.execute(
-            `SELECT b.name AS bank_name, b.status,
-                    COUNT(la.id) AS applications,
-                    SUM(CASE WHEN la.status = 'approved' THEN 1 ELSE 0 END) AS approved
-             FROM banks b
-             LEFT JOIN loan_applications la ON la.selected_bank_id = b.id AND la.created_at BETWEEN :start AND :end
-             GROUP BY b.id, b.name, b.status`,
-            params,
-          );
-          break;
-        default: {
-          const e = new Error('Unknown report type');
-          e.status = 404;
-          throw e;
-        }
+      if (reportKey === 'master') {
+        const master = await buildMasterReport(pool, params, {
+          startDate: req.query.startDate,
+          endDate: req.query.endDate,
+        });
+        return res.json(master);
       }
 
-      res.json({ reportKey, columns, rows, generatedAt: new Date().toISOString() });
+      const { columns, rows } = await generateReportSection(pool, reportKey, params);
+
+      res.json({
+        reportKey,
+        columns,
+        rows,
+        generatedAt: new Date().toISOString(),
+      });
     } catch (err) {
       next(err);
     }

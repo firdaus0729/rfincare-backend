@@ -83,6 +83,74 @@ export async function resolveResumeToken(token) {
   };
 }
 
+/**
+ * Ensure a marketing lead has a draft session (creates one from lead contact info if missing).
+ */
+export async function ensureLeadDraftSession(pool, lead) {
+  const leadId = lead.id;
+  let sessionKey = lead.session_key;
+
+  if (sessionKey) {
+    const [[draft]] = await pool.execute(
+      `SELECT session_key FROM application_form_drafts WHERE session_key = :sk LIMIT 1`,
+      { sk: sessionKey },
+    );
+    if (draft) return sessionKey;
+  }
+
+  sessionKey = crypto.randomBytes(16).toString('hex');
+  const nameParts = String(lead.full_name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  let eligibilityForm = {};
+  if (lead.eligibility_data) {
+    try {
+      const parsed =
+        typeof lead.eligibility_data === 'object'
+          ? lead.eligibility_data
+          : JSON.parse(lead.eligibility_data);
+      if (parsed?.formData && typeof parsed.formData === 'object') {
+        eligibilityForm = parsed.formData;
+      }
+    } catch {
+      /* ignore malformed JSON */
+    }
+  }
+
+  const formData = {
+    email: lead.email,
+    phone: lead.phone,
+    firstName: nameParts[0] || '',
+    lastName: nameParts.slice(1).join(' ') || '',
+    ...eligibilityForm,
+  };
+
+  await pool.execute(
+    `INSERT INTO application_form_drafts (
+       id, session_key, form_data, current_step, loan_type, application_id
+     ) VALUES (
+       :id, :sk, :data, :step, :loan_type, :app_id
+     )`,
+    {
+      id: newId(),
+      sk: sessionKey,
+      data: JSON.stringify(formData),
+      step: 0,
+      loan_type: lead.loan_type || null,
+      app_id: lead.application_id || null,
+    },
+  );
+
+  await pool.execute(
+    `UPDATE marketing_leads SET session_key = :sk, updated_at = NOW(3) WHERE id = :id`,
+    { sk: sessionKey, id: leadId },
+  );
+
+  return sessionKey;
+}
+
 export async function upsertLeadFromDraft({ sessionKey, formData, loanType, currentStep, applicationId }) {
   const email = formData?.email?.trim();
   const phone = (formData?.phone || '').replace(/\D/g, '').slice(-10);

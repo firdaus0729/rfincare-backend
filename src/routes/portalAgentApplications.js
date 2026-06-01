@@ -12,6 +12,7 @@ import {
   commissionStatusForApplication,
 } from '../lib/agentCustomerProvision.js';
 import { writeAuditLog } from '../lib/audit.js';
+import { ensureAgentCodeForUser } from '../lib/agentCode.js';
 
 export const portalAgentApplicationsRouter = Router();
 
@@ -32,7 +33,9 @@ async function resolveAgentMeta(pool, userId) {
     { id: userId },
   );
   const agentCode =
-    row?.agent_code || `AGT-${String(userId).slice(0, 8).toUpperCase()}`;
+    (await ensureAgentCodeForUser(pool, userId)) ||
+    row?.agent_code ||
+    null;
   return {
     agentId: userId,
     agentCode,

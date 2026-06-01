@@ -10,6 +10,7 @@ import { newId } from '../lib/ids.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { generateOtp, hashOtp, sendOtpNotification } from '../lib/otp.js';
 import { ensureAgentProfileSchema } from '../db/ensureAgentProfileSchema.js';
+import { backfillMissingAgentCodes, ensureAgentCodeForUser } from '../lib/agentCode.js';
 
 export const portalAgentProfileRouter = Router();
 
@@ -132,7 +133,9 @@ portalAgentProfileRouter.get('/', async (req, res, next) => {
     requireAgent(req);
     await ensureAgentProfileSchema();
     const pool = getPool();
+    await backfillMissingAgentCodes(pool);
     const row = await loadAgentContext(pool, req.auth.userId);
+    const agentCode = (await ensureAgentCodeForUser(pool, req.auth.userId)) || row.agent_code;
     const mobile = row.mobile_number || row.phone;
 
     res.json({
@@ -142,7 +145,7 @@ portalAgentProfileRouter.get('/', async (req, res, next) => {
         email: row.email,
         phone: row.phone,
         avatarUrl: row.avatar_url,
-        agentCode: row.agent_code,
+        agentCode,
         username: row.username,
         isActive: Boolean(row.is_active),
         accountStatus: row.account_status,

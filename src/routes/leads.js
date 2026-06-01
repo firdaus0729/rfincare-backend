@@ -6,7 +6,11 @@ import { ensureOnboardingSchema } from '../db/ensureOnboardingSchema.js';
 import { newId } from '../lib/ids.js';
 import { hashOtp, sendDualChannelOtp, sendOtpNotification } from '../lib/otp.js';
 import { getOtpProviderSettings } from '../lib/otpProviderSettings.js';
-import { createResumeToken, upsertLeadFromDraft } from '../lib/resumeTokens.js';
+import {
+  createResumeToken,
+  ensureLeadDraftSession,
+  upsertLeadFromDraft,
+} from '../lib/resumeTokens.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { hasPermission } from '../auth/permissions.js';
 
@@ -205,13 +209,25 @@ leadsRouter.post('/verify-otp', async (req, res, next) => {
     let smsRow = null;
     let emailRow = null;
 
+    const devTestOtp =
+      process.env.LOG_OTP === 'true' &&
+      (!settings.requireMobileOtp || mobileCode === '123456') &&
+      (!settings.requireEmailOtp || emailCode === '123456');
+
     if (settings.requireMobileOtp && mobileCode) {
       const [[row]] = await pool.execute(
-        `SELECT id, lead_id FROM lead_otps
-         WHERE phone = :phone AND otp_hash = :hash AND purpose = 'lead_verify' AND channel = 'sms'
-           AND verified_at IS NULL AND expires_at > NOW(3)
-         ORDER BY created_at DESC LIMIT 1`,
-        { phone: body.phone, hash: hashOtp(mobileCode) },
+        devTestOtp
+          ? `SELECT id, lead_id FROM lead_otps
+             WHERE phone = :phone AND purpose = 'lead_verify' AND channel = 'sms'
+               AND verified_at IS NULL AND expires_at > NOW(3)
+             ORDER BY created_at DESC LIMIT 1`
+          : `SELECT id, lead_id FROM lead_otps
+             WHERE phone = :phone AND otp_hash = :hash AND purpose = 'lead_verify' AND channel = 'sms'
+               AND verified_at IS NULL AND expires_at > NOW(3)
+             ORDER BY created_at DESC LIMIT 1`,
+        devTestOtp
+          ? { phone: body.phone }
+          : { phone: body.phone, hash: hashOtp(mobileCode) },
       );
       smsRow = row;
       if (!smsRow) {
@@ -221,11 +237,18 @@ leadsRouter.post('/verify-otp', async (req, res, next) => {
 
     if (settings.requireEmailOtp && emailCode) {
       const [[row]] = await pool.execute(
-        `SELECT id, lead_id FROM lead_otps
-         WHERE email = :email AND otp_hash = :hash AND purpose = 'lead_verify' AND channel = 'email'
-           AND verified_at IS NULL AND expires_at > NOW(3)
-         ORDER BY created_at DESC LIMIT 1`,
-        { email: body.email, hash: hashOtp(emailCode) },
+        devTestOtp
+          ? `SELECT id, lead_id FROM lead_otps
+             WHERE email = :email AND purpose = 'lead_verify' AND channel = 'email'
+               AND verified_at IS NULL AND expires_at > NOW(3)
+             ORDER BY created_at DESC LIMIT 1`
+          : `SELECT id, lead_id FROM lead_otps
+             WHERE email = :email AND otp_hash = :hash AND purpose = 'lead_verify' AND channel = 'email'
+               AND verified_at IS NULL AND expires_at > NOW(3)
+             ORDER BY created_at DESC LIMIT 1`,
+        devTestOtp
+          ? { email: body.email }
+          : { email: body.email, hash: hashOtp(emailCode) },
       );
       emailRow = row;
       if (!emailRow) {
@@ -430,20 +453,19 @@ leadsRouter.post('/:id/resume-link', authenticate, async (req, res, next) => {
       id: req.params.id,
     });
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
-    if (!lead.session_key) {
-      return res.status(400).json({ error: 'Lead has no linked application session yet' });
-    }
 
     const body = z
       .object({
-        frontendOrigin: z.string().url().optional(),
+        frontendOrigin: z.string().max(512).optional(),
         sendNotification: z.boolean().optional(),
         channel: z.enum(['email', 'sms', 'whatsapp']).optional(),
       })
       .parse(req.body || {});
 
+    const sessionKey = await ensureLeadDraftSession(pool, lead);
+
     const link = await createResumeToken({
-      sessionKey: lead.session_key,
+      sessionKey,
       leadId: lead.id,
       frontendOrigin: body.frontendOrigin,
     });

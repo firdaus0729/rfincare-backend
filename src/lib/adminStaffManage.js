@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { getPool } from '../db/pool.js';
 import { ensureOnboardingSchema } from '../db/ensureOnboardingSchema.js';
 import { sendStaffWelcomeEmail } from './email.js';
+import { ensureAgentCodeForUser } from './agentCode.js';
 
 function pick(body, ...keys) {
   for (const key of keys) {
@@ -30,13 +31,14 @@ export async function fetchAgentDetail(userId) {
     e.status = 404;
     throw e;
   }
+  const agentCode = (await ensureAgentCodeForUser(pool, userId)) || row.agent_code;
   return {
     id: row.id,
     email: row.email,
     fullName: row.full_name || row.agent_name,
     phone: row.phone || row.mobile_number,
     username: row.username,
-    agentCode: row.agent_code,
+    agentCode,
     agentName: row.agent_name || row.full_name,
     mobileNumber: row.mobile_number,
     accountNumber: row.account_number,
@@ -92,7 +94,6 @@ export async function updateAgentDetails(userId, body) {
   const email = pick(body, 'email');
   const phone = pick(body, 'mobileNumber', 'mobile_number', 'phone');
   const username = pick(body, 'username');
-  const agentCode = pick(body, 'agentCode', 'agent_code');
   const accountNumber = pick(body, 'accountNumber', 'account_number');
   const bankName = pick(body, 'bankName', 'bank_name');
   const ifscCode = pick(body, 'ifscCode', 'ifsc_code');
@@ -141,7 +142,6 @@ export async function updateAgentDetails(userId, body) {
        email = COALESCE(:email, email),
        mobile_number = COALESCE(:mobile_number, mobile_number),
        username = COALESCE(:username, username),
-       agent_code = COALESCE(:agent_code, agent_code),
        account_number = COALESCE(:account_number, account_number),
        bank_name = COALESCE(:bank_name, bank_name),
        ifsc_code = COALESCE(:ifsc_code, ifsc_code),
@@ -153,7 +153,6 @@ export async function updateAgentDetails(userId, body) {
       email: email || null,
       mobile_number: phone || null,
       username: username || null,
-      agent_code: agentCode || null,
       account_number: accountNumber || null,
       bank_name: bankName || null,
       ifsc_code: ifscCode ? String(ifscCode).toUpperCase() : null,
