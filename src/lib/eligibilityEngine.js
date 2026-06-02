@@ -5,7 +5,23 @@ const CREDIT_SCORE_MAP = {
   good: 725,
   fair: 675,
   poor: 600,
+  very_poor: 550,
+  unknown: 650,
+  '-1': 0,
+  minus_1: 0,
+  '0': 0,
+  zero: 0,
+  no_history: 0,
 };
+
+function normalizeCreditScoreKey(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return '';
+  if (raw === '-1' || raw === 'minus_1' || raw === 'minus 1') return '-1';
+  if (raw === '0' || raw === 'zero') return '0';
+  if (raw === 'no_history' || raw === 'no history' || raw === 'nohistory') return 'no_history';
+  return String(value || '').trim();
+}
 
 function parseRuleData(row) {
   if (!row?.data) return {};
@@ -78,7 +94,12 @@ export async function calculateEligibility(input) {
   const monthlyIncome = Number(input.monthlyIncome) || 0;
   const loanAmount = Number(input.loanAmount) || 0;
   const existingLoans = Number(input.existingLoans) || 0;
-  const creditScore = CREDIT_SCORE_MAP[input.creditScore] ?? CREDIT_SCORE_MAP[input.creditScoreRange] ?? 700;
+  const creditKey = normalizeCreditScoreKey(input.creditScore || input.creditScoreRange);
+  const creditScore =
+    CREDIT_SCORE_MAP[creditKey] ??
+    CREDIT_SCORE_MAP[input.creditScore] ??
+    CREDIT_SCORE_MAP[input.creditScoreRange] ??
+    700;
   const employmentType = normalizeEmploymentType(input.employmentType);
   const loanType = input.loanType || input.loanPurpose || null;
   const loanCategory = inferSecuredCategory(loanType);

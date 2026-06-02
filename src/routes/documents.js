@@ -45,13 +45,24 @@ function normalizeDocStatus(row) {
   return 'pending';
 }
 
+function inferMimeType(row) {
+  if (row.mime_type) return row.mime_type;
+  const name = String(row.document_name || basename(row.file_path) || '').toLowerCase();
+  if (name.endsWith('.pdf')) return 'application/pdf';
+  if (/\.(jpe?g|png|gif|webp)$/.test(name)) return 'image/jpeg';
+  return row.mime_type || 'application/octet-stream';
+}
+
 function formatDocumentRow(row) {
   const fileName = basename(row.file_path);
-  const isImage = (row.mime_type || '').startsWith('image/');
-  const previewUrl = isImage && fileName ? `/uploads/${fileName}` : null;
+  const mimeType = inferMimeType(row);
+  const isImage = mimeType.startsWith('image/');
+  const isPdf = mimeType.includes('pdf');
+  const previewUrl = fileName && (isImage || isPdf) ? `/uploads/${fileName}` : null;
   const verificationStatus = normalizeDocStatus(row);
   return {
     ...row,
+    mime_type: mimeType,
     verification_status: verificationStatus,
     status: verificationStatus,
     preview_url: previewUrl,

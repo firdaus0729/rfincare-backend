@@ -22,6 +22,9 @@ const ADMIN_DELETE_OTP_PURPOSE = 'admin_delete_apps';
 const DOCUMENT_STAGE_OPTIONS = new Set([
   'documents_pending',
   'documents_received',
+  'submitted_to_bank',
+  'under_process',
+  'pending_at_qc',
   'at_kyc_stage',
   'at_bgv_stage',
   'at_credit_stage',
@@ -32,6 +35,8 @@ const DOCUMENT_STAGE_OPTIONS = new Set([
 ]);
 const BANK_APPROVAL_STAGE_OPTIONS = new Set([
   'submitted_to_bank',
+  'under_process',
+  'pending_at_qc',
   'at_kyc_stage',
   'at_bgv_stage',
   'at_credit_stage',

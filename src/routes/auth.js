@@ -156,13 +156,31 @@ authRouter.post('/login', async (req, res, next) => {
       e.status = 403;
       throw e;
     }
-    if (profile.account_status === 'locked') {
-      const e = new Error('Account is locked due to multiple failed login attempts.');
+
+    const lockStillActive =
+      profile.locked_until && new Date(profile.locked_until) > new Date();
+    const lockExpired =
+      profile.locked_until && new Date(profile.locked_until) <= new Date();
+
+    if (profile.account_status === 'locked' && (lockExpired || !profile.locked_until)) {
+      await pool.execute(
+        `UPDATE user_profiles
+         SET account_status = 'active', failed_login_attempts = 0, locked_until = NULL
+         WHERE id = :id`,
+        { id: profile.id },
+      );
+      profile.account_status = 'active';
+      profile.failed_login_attempts = 0;
+      profile.locked_until = null;
+    }
+
+    if (lockStillActive) {
+      const e = new Error('Account is temporarily locked. Please try again in a few minutes.');
       e.status = 403;
       throw e;
     }
-    if (profile.locked_until && new Date(profile.locked_until) > new Date()) {
-      const e = new Error('Account is temporarily locked. Please try again later.');
+    if (profile.account_status === 'locked') {
+      const e = new Error('Account is locked due to multiple failed login attempts.');
       e.status = 403;
       throw e;
     }
@@ -191,7 +209,11 @@ authRouter.post('/login', async (req, res, next) => {
     }
 
     await pool.execute(
-      `UPDATE user_profiles SET failed_login_attempts = 0, locked_until = NULL WHERE id = :id`,
+      `UPDATE user_profiles
+       SET failed_login_attempts = 0,
+           locked_until = NULL,
+           account_status = IF(account_status = 'locked', 'active', account_status)
+       WHERE id = :id`,
       { id: profile.id },
     );
 
