@@ -1,7 +1,11 @@
 import { Router } from 'express';
+import { mkdirSync } from 'node:fs';
+import { extname, join } from 'node:path';
+import multer from 'multer';
 import { z } from 'zod';
 
 import { getPool } from '../db/pool.js';
+import { getUploadDir } from '../lib/uploadPaths.js';
 import { ensureBankSchema } from '../db/ensureBankSchema.js';
 import { cacheDeletePrefix, cacheGet, cacheSet } from '../lib/simpleCache.js';
 import { authenticate } from '../middleware/authenticate.js';
@@ -63,12 +67,50 @@ function normalizeLoanTypeQuery(value) {
 const emptyToNull = (value) =>
   value === '' || value === undefined ? null : value;
 
+const logoUrlSchema = z.preprocess(
+  emptyToNull,
+  z
+    .union([
+      z.string().url(),
+      z.string().regex(/^\/uploads\/[\w./-]+$/i),
+      z.null(),
+    ])
+    .optional(),
+);
+
+const BANK_LOGO_MIME = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/svg+xml',
+]);
+
+const bankLogoDir = join(getUploadDir(), 'bank-logos');
+mkdirSync(bankLogoDir, { recursive: true });
+
+const bankLogoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      mkdirSync(bankLogoDir, { recursive: true });
+      cb(null, bankLogoDir);
+    },
+    filename: (_req, file, cb) => {
+      const ext = extname(file.originalname || '') || '.png';
+      const safeExt = ext.replace(/[^a-zA-Z0-9.]/g, '').slice(0, 8) || '.png';
+      cb(null, `bank-logo-${Date.now()}-${newId().slice(0, 8)}${safeExt}`);
+    },
+  }),
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (BANK_LOGO_MIME.has(file.mimetype)) cb(null, true);
+    else cb(new Error('Only JPEG, PNG, GIF, WebP, or SVG images are allowed'));
+  },
+});
+
 const BankSchema = z.object({
   name: z.string().min(1),
-  logo_url: z.preprocess(
-    emptyToNull,
-    z.union([z.string().url(), z.null()]).optional(),
-  ),
+  logo_url: logoUrlSchema,
   logo_alt: z.preprocess(emptyToNull, z.string().nullable().optional()),
   status: z.string().optional(),
   display_priority: z.coerce.number().optional(),
@@ -288,6 +330,40 @@ banksRouter.post(
       );
       invalidateBankListCache();
       res.status(201).json(formatBankRow(row));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+banksRouter.post(
+  '/:id/logo',
+  authenticate,
+  authorize({ resource: 'banks', action: 'update' }),
+  bankLogoUpload.single('logo'),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'Logo image file is required (field name: logo)' });
+      }
+      const pool = getPool();
+      const [[existing]] = await pool.execute(
+        `SELECT id FROM banks WHERE id = :id LIMIT 1`,
+        { id: req.params.id },
+      );
+      if (!existing) return res.status(404).json({ error: 'Bank not found' });
+
+      const logoUrl = `/uploads/bank-logos/${req.file.filename}`;
+      await pool.execute(
+        `UPDATE banks SET logo_url = :logo_url, updated_at = :updated_at WHERE id = :id`,
+        { id: req.params.id, logo_url: logoUrl, updated_at: new Date() },
+      );
+      const [[row]] = await pool.execute(
+        `SELECT ${BANK_COLUMNS} FROM banks WHERE id = :id`,
+        { id: req.params.id },
+      );
+      invalidateBankListCache();
+      res.json(formatBankRow(row));
     } catch (err) {
       next(err);
     }
